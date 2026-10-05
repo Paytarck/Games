@@ -5723,7 +5723,7 @@
         worldRound: -1, pendingState: null, stateT: 0, hudSig: '', timeSig: '', modalKey: '',
         fireSeq: 0, localAim: 0, aimInit: false, aimLock: 0, pred: [], fireTimes: {}, ping: 0, pingShown: -1,
         lastInputKey: '', lastInputT: 0,
-        myColor: -1, savedColors: null, keys: null, reopen: false,
+        myColor: -1, savedColors: null, keys: null, reopen: false, rules: null,
     };
     const STATE_SEND_MS = 33;                       // ~30 snapshots per second
     const isRemoteSlot = (i) => ONLINE.active && ONLINE.role === 'host' && i !== 0;
@@ -6388,11 +6388,14 @@
             TankNet.onWorld(onWorld);
             TankNet.onState((j) => { ONLINE.pendingState = j; });
         }
+        ONLINE.rules = null;
+        if (role === 'guest') TankNet.onRules((r) => { ONLINE.rules = r; if (ONLINE.lobby) renderRules(); });
         byId('onlineRoomCode').textContent = code;
         showOnlineScreen('lobby');
         setOnlineMsg('');
         updateRoomBadge();
         renderLobby();
+        if (role === 'host') publishRules();
     }
 
     async function onlineCreate() {
@@ -6451,7 +6454,86 @@
         startBtn.disabled = n < 2;
         startBtn.textContent = n < 2 ? 'NEED 2+ PLAYERS' : `START GAME (${n})`;
         if (ONLINE.role === 'guest') setOnlineMsg('Waiting for the host to start the game...');
+        renderRules();
     }
+
+    // ------------------------------------------------------------
+    //  LOBBY GAME RULES: only the HOST edits them, guests see them live
+    // ------------------------------------------------------------
+    const RULE_TIME_LABELS = { 30: '30 sec', 60: '1 min', 120: '2 min', 180: '3 min', 240: '4 min', 420: '7 min' };
+
+    function currentRules() {
+        return {
+            rm: randomMapsEnabled ? 1 : 0, map: selectedMapIndex,
+            tme: timeModeEnabled ? 1 : 0, td: timeDuration, sd: suddenDeathEnabled ? 1 : 0,
+            gt: giantTankEnabled ? 1 : 0, ctf: ctfModeEnabled ? 1 : 0, tm: teamModeEnabled ? 1 : 0,
+        };
+    }
+    function publishRules() { if (ONLINE.role === 'host') TankNet.setRules(currentRules()); }
+
+    function ruleToggle(key, on, disabled) {
+        return `<label class="toggle-switch"><input type="checkbox" data-rule="${key}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span class="toggle-slider"></span></label>`;
+    }
+    function ruleVal(on) { return `<span class="rule-val ${on ? '' : 'off'}">${on ? 'ON' : 'OFF'}</span>`; }
+
+    function renderRules() {
+        const box = byId('onlineRules');
+        if (!box || !ONLINE.active || !ONLINE.lobby) return;
+        const host = ONLINE.role === 'host';
+        const r = host ? currentRules() : ONLINE.rules;
+        byId('onlineRulesLabel').textContent = host ? 'GAME RULES · YOU CONTROL THESE' : 'GAME RULES · SET BY HOST';
+        if (!r) { box.innerHTML = '<div class="rules-wait">Host is choosing the rules...</div>'; return; }
+
+        const mapName = r.rm ? '🎲 Random each round' : ((MAPS[r.map] || MAPS[0]).name);
+        const timeOn = !!r.tme;
+        let html = '';
+        if (host) {
+            html += `<div class="rule-row"><span class="rule-name">🗺️ MAP</span>
+                <select class="rule-select" data-rule="map">
+                    <option value="r" ${r.rm ? 'selected' : ''}>🎲 Random each round</option>
+                    ${MAPS.map((m, i) => `<option value="${i}" ${(!r.rm && r.map === i) ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('')}
+                </select></div>
+                <div class="rule-row"><span class="rule-name">⏱️ TIME LIMIT</span>${ruleToggle('tme', timeOn)}</div>
+                <div class="rule-row ${timeOn ? '' : 'rule-off'}"><span class="rule-name">⏳ DURATION</span>
+                    <select class="rule-select" data-rule="td" ${timeOn ? '' : 'disabled'}>
+                        ${CONFIG.TIME_OPTIONS.map(t => `<option value="${t}" ${r.td === t ? 'selected' : ''}>${RULE_TIME_LABELS[t] || t + ' sec'}</option>`).join('')}
+                    </select></div>
+                <div class="rule-row ${timeOn ? '' : 'rule-off'}"><span class="rule-name">💀 SUDDEN DEATH</span>${ruleToggle('sd', !!r.sd, !timeOn)}</div>
+                <div class="rule-row"><span class="rule-name">⚠️ GIANT TANK</span>${ruleToggle('gt', !!r.gt)}</div>
+                <div class="rule-row"><span class="rule-name">🏴 CAPTURE THE FLAG</span>${ruleToggle('ctf', !!r.ctf)}</div>
+                <div class="rule-row"><span class="rule-name">🛡️ TEAM MODE</span>${ruleToggle('tm', !!r.tm)}</div>
+                <div class="rules-hint">Only you can change these and start the game. Some maps set their own rules (e.g. Territory War).</div>`;
+        } else {
+            html += `<div class="rule-row"><span class="rule-name">🗺️ MAP</span><span class="rule-val">${escapeHtml(mapName)}</span></div>
+                <div class="rule-row"><span class="rule-name">⏱️ TIME LIMIT</span>${timeOn ? `<span class="rule-val">${RULE_TIME_LABELS[r.td] || r.td + ' sec'}</span>` : ruleVal(false)}</div>
+                <div class="rule-row ${timeOn ? '' : 'rule-off'}"><span class="rule-name">💀 SUDDEN DEATH</span>${ruleVal(timeOn && !!r.sd)}</div>
+                <div class="rule-row"><span class="rule-name">⚠️ GIANT TANK</span>${ruleVal(!!r.gt)}</div>
+                <div class="rule-row"><span class="rule-name">🏴 CAPTURE THE FLAG</span>${ruleVal(!!r.ctf)}</div>
+                <div class="rule-row"><span class="rule-name">🛡️ TEAM MODE</span>${ruleVal(!!r.tm)}</div>`;
+        }
+        box.innerHTML = html;
+    }
+
+    byId('onlineRules').addEventListener('change', (e) => {
+        if (ONLINE.role !== 'host' || !ONLINE.lobby) return;        // host-only
+        const el = e.target, k = el.dataset && el.dataset.rule;
+        if (!k) return;
+        if (k === 'map') {
+            if (el.value === 'r') randomMapsEnabled = true;
+            else { randomMapsEnabled = false; selectedMapIndex = Math.max(0, Math.min(MAPS.length - 1, parseInt(el.value) || 0)); }
+        }
+        else if (k === 'td') timeDuration = parseInt(el.value) || timeDuration;
+        else if (k === 'tme') { timeModeEnabled = el.checked; if (!timeModeEnabled) suddenDeathEnabled = false; }
+        else if (k === 'sd') suddenDeathEnabled = el.checked && timeModeEnabled;
+        else if (k === 'gt') giantTankEnabled = el.checked;
+        else if (k === 'ctf') ctfModeEnabled = el.checked;
+        else if (k === 'tm') teamModeEnabled = el.checked;
+        playSound('toggle');
+        saveTimeSettingsToStorage(); saveTeamSettingsToStorage(); saveCtfSettingsToStorage();
+        saveMapSettingsToStorage(); saveGiantTankSettingToStorage();
+        renderRules();
+        publishRules();
+    });
 
     function onLobbyPlayers(map) {
         ONLINE.playersMap = map || {};
@@ -6483,6 +6565,7 @@
             return seen[n] > 1 ? `${n} ${seen[n]}` : n;
         });
         ONLINE.count = ONLINE.slotUids.length;
+        if (teamModeEnabled) teamAssignments = [0, 1, 0, 1];      // fair split: blue / red alternating
         while (playerConfigs.length < ONLINE.count) playerConfigs.push(getDefaultConfigs()[playerConfigs.length]);
         resolveSlotColors(ONLINE.slotUids).forEach((c, i) => { playerConfigs[i].colorIndex = c; });
 

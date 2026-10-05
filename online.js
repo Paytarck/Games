@@ -5,6 +5,7 @@
  *   status    - 'lobby' | 'playing'
  *   players/<uid> = { name, joinedAt, color }   (color = palette index)
  *   input/<uid>   = { x, y, a, f }      guest -> host  (controls)
+ *   rules         = { rm, map, tme, td, sd, gt, ctf, tm }   host -> guests (lobby game rules, host-only edit)
  *   world         = { r, d }            host  -> guests (map + static data, once per round)
  *   state         = "<json string>"     host  -> guests (snapshot, ~20x / second)
  */
@@ -104,6 +105,7 @@
     }
 
     // ---- listeners ----
+    function onRules(cb)    { listen(roomRef.child('rules'),   'value', s => cb(s.val())); }
     function onPlayers(cb)  { listen(roomRef.child('players'), 'value', s => cb(s.val() || {})); }
     function onRoomGone(cb) { listen(roomRef.child('hostUid'), 'value', s => { if (s.val() === null) cb(); }); }
     function onWorld(cb)    { listen(roomRef.child('world'),   'value', s => { const v = s.val(); if (v) cb(v.r, v.d); }); }
@@ -130,6 +132,7 @@
         });
         return !!res.committed;
     }
+    function setRules(o)         { if (roomRef && role === 'host') roomRef.child('rules').set(o); }   // host -> guests (lobby game rules)
     function lockRoom()          { if (roomRef && role === 'host') roomRef.child('status').set('playing'); }
 
     function leave() {
@@ -152,8 +155,8 @@
 
     window.TankNet = {
         available, configured, init, createRoom, joinRoom,
-        onPlayers, onRoomGone, onWorld, onState, onInput,
-        sendInput, setWorld, sendState, lockRoom, setColor, leave,
+        onPlayers, onRules, onRoomGone, onWorld, onState, onInput,
+        sendInput, setWorld, sendState, setRules, lockRoom, setColor, leave,
         uid: () => uid, code: () => code
     };
 })();

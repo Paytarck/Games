@@ -2540,3 +2540,25 @@ body.rotate-view .gfx-toast { transform: translateX(-50%); }
 @keyframes ocPulse { 50% { box-shadow: 0 0 14px rgba(241, 226, 122, 0.55); } }
 .oc-note { font-size: 0.82rem; line-height: 1.45; color: #c8e6a8; text-align: left; }
 #onlineControlsModal .online-screen { max-height: 52vh; overflow-y: auto; }
+
+/* ---- online lobby: host-controlled game rules ---- */
+.online-content { max-height: 92vh; overflow-y: auto; }
+.rules-box {
+    display: flex; flex-direction: column; gap: 6px; text-align: left;
+    padding: 10px; border-radius: 10px;
+    background: rgba(10, 15, 8, 0.55); border: 1px solid rgba(168, 212, 122, 0.25);
+}
+.rule-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; }
+.rule-row > span.rule-name { font-size: 0.8rem; letter-spacing: 1px; color: #c8e6a8; }
+.rule-row.rule-off { opacity: 0.45; }
+.rule-select {
+    background: #1b2714; color: #eaf5dc; border: 1px solid rgba(168, 212, 122, 0.4);
+    border-radius: 8px; padding: 6px 8px; font-size: 0.82rem; max-width: 55%;
+}
+.rule-val { font-size: 0.8rem; font-weight: bold; color: #f1e27a; text-align: right; }
+.rule-val.off { color: #8fa97a; }
+.rules-wait { font-size: 0.82rem; color: #8fa97a; text-align: center; padding: 6px 0; }
+.rules-hint { font-size: 0.7rem; color: #8fa97a; text-align: center; }
+
+/* only the host can start the game */
+body.online-guest #onlineStartBtn { display: none !important; }
