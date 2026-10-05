@@ -301,15 +301,15 @@
     let touchAim = [null, null, null, null];     // angle (rad) while a player drags their aim pad, else null
     // Per-player choice: 'manual' = you aim the gun yourself, 'auto' = gun spins on its own
     const mobileAimMode = (function () {
-        const def = ['manual', 'manual', 'manual', 'manual'];
+        const def = ['auto', 'auto', 'auto', 'auto'];
         try {
-            const v = JSON.parse(localStorage.getItem('tankBattleMobileAim') || 'null');
-            if (Array.isArray(v)) return def.map((d, i) => (v[i] === 'auto' ? 'auto' : d));
+            const v = JSON.parse(localStorage.getItem('tankBattleMobileAim2') || 'null');
+            if (Array.isArray(v)) return def.map((d, i) => (v[i] === 'manual' ? 'manual' : d));
         } catch (e) {}
         return def;
     })();
     function saveMobileAimMode() {
-        try { localStorage.setItem('tankBattleMobileAim', JSON.stringify(mobileAimMode)); } catch (e) {}
+        try { localStorage.setItem('tankBattleMobileAim2', JSON.stringify(mobileAimMode)); } catch (e) {}
     }
     let settingsPausedGame = false;   // true when opening Settings paused a running game
 
@@ -1720,6 +1720,12 @@
         if (blockedKeys.includes(e.code)) e.preventDefault();
         if (e.code.startsWith('Numpad')) e.preventDefault();
 
+        if (e.code === 'KeyT' && !e.repeat && !mobileMode && !players.some(pl => pl.keys && Object.values(pl.keys).includes('KeyT'))) {
+            EASY.autoAim = !EASY.autoAim;
+            try { localStorage.setItem('tankBattleAutoAim', EASY.autoAim ? '1' : '0'); } catch (err) {}
+            gfxToast(EASY.autoAim ? 'Auto-aim: ON 🎯' : 'Auto-aim: OFF (use mouse or rotate keys)');
+        }
+
         if (gamePaused) return;
 
         if (!keysPressed[e.code]) {
@@ -1748,6 +1754,124 @@
     // ============================================================
     //  SHOOTING
     // ============================================================
+
+    // ============================================================
+    //  EASY CONTROLS  (auto-aim, mouse aim, click / Space to fire)
+    // ============================================================
+    const EASY = {
+        autoAim: true,                       // keyboard players: gun follows the nearest enemy by itself
+        mouseInside: false, mx: 0, my: 0,    // mouse position over the arena
+        mouseDown: false,
+        manual: [0, 0, 0, 0],                // frames the gun stays "hand-controlled" after Q/E style keys
+        hold: [false, false, false, false],  // phone: fire pad held down
+    };
+    try { EASY.autoAim = localStorage.getItem('tankBattleAutoAim') !== '0'; } catch (e) {}
+
+    function easyMySlot() {
+        if (!ONLINE.active) return 0;
+        return ONLINE.role === 'host' ? 0 : ONLINE.mySlot;
+    }
+
+    // angle from tank p to the closest living enemy (null when nobody is left)
+    function enemyAngleFor(p) {
+        if (!p) return null;
+        const cx = p.x + CONFIG.TANK_SIZE / 2, cy = p.y + CONFIG.TANK_SIZE / 2;
+        let best = null, bd = Infinity;
+        for (const q of players) {
+            if (q === p || !q.alive || isSameTeam(p, q)) continue;
+            const d = dist(cx, cy, q.x + CONFIG.TANK_SIZE / 2, q.y + CONFIG.TANK_SIZE / 2);
+            if (d < bd) { bd = d; best = q; }
+        }
+        if (!best) return null;
+        return Math.atan2(best.y + CONFIG.TANK_SIZE / 2 - cy, best.x + CONFIG.TANK_SIZE / 2 - cx);
+    }
+
+    // mouse position -> arena coordinates (works with the zoom camera too)
+    function easyMouseWorld() {
+        const r = canvas.getBoundingClientRect();
+        if (!r.width || !r.height) return null;
+        const nx = (EASY.mx - r.left) / r.width, ny = (EASY.my - r.top) / r.height;
+        const zoomed = !!gfxCameraTarget() && GFX.zoom > 1;
+        const z = zoomed ? GFX.zoom : 1;
+        return {
+            x: (nx * CONFIG.CANVAS_W) / z + (zoomed ? GFX.camX : 0),
+            y: (ny * CONFIG.CANVAS_H) / z + (zoomed ? GFX.camY : 0),
+        };
+    }
+
+    // desktop aiming: returns the new gun angle for this tank
+    function easyDesktopAim(p, slot, rotatingKeys, cur) {
+        if (rotatingKeys) EASY.manual[slot] = 50;
+        else if (EASY.manual[slot] > 0) EASY.manual[slot]--;
+        if (EASY.manual[slot] > 0) return cur;                       // Q/E (rotate keys) = full manual
+        if (slot === easyMySlot() && EASY.mouseInside) {             // mouse = point the gun at the cursor
+            const m = easyMouseWorld();
+            if (m) return Math.atan2(m.y - (p.y + CONFIG.TANK_SIZE / 2), m.x - (p.x + CONFIG.TANK_SIZE / 2));
+        }
+        if (EASY.autoAim) {
+            const ea = enemyAngleFor(p);
+            if (ea !== null) return lerpAngle(cur, ea, 0.22);
+        }
+        return cur;
+    }
+
+    // should a shot snap the gun to the nearest enemy first?
+    function easyAutoAimWanted(slot, mobileIdx) {
+        if (mobileMode) return mobileAimMode[mobileIdx] === 'auto' && (touchAim[mobileIdx] === null || touchAim[mobileIdx] === undefined);
+        return EASY.autoAim && EASY.manual[slot] <= 0 && !(slot === easyMySlot() && EASY.mouseInside);
+    }
+
+    // fire the "main" tank (mouse click / Space on a laptop)
+    function easyFirePrimary() {
+        if (!gameActive || gamePaused || ONLINE.lobby) return;
+        if (isOnlineGuest()) {
+            const me = players[ONLINE.mySlot];
+            if (me && me.alive && me.reload <= 0) guestFire();
+            return;
+        }
+        const p = players[easyMySlot()];
+        if (!p || !p.alive || p.beingAbducted || p.reload > 0) return;
+        shootBullet(p);
+    }
+
+    // called every frame: holding the mouse button / Space / the phone fire pad = keep shooting
+    function easyHoldFire() {
+        if (!gameActive || gamePaused || ONLINE.lobby) return;
+        if (mobileMode) {
+            const n = ONLINE.active ? 1 : playerCount;
+            for (let i = 0; i < n; i++) {
+                if (EASY.hold[i] && mobileAimMode[i] === 'auto' && (touchAim[i] === null || touchAim[i] === undefined)) mobileShoot(i);
+            }
+        } else if (EASY.mouseDown || keysPressed['Space']) {
+            easyFirePrimary();
+        }
+    }
+
+    function easyModalOpen() {
+        return !!document.querySelector('.modal-overlay.active') || layoutEditMode;
+    }
+
+    window.addEventListener('mousemove', (e) => {
+        EASY.mx = e.clientX; EASY.my = e.clientY;
+        const r = canvas.getBoundingClientRect();
+        EASY.mouseInside = !mobileMode && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    });
+    document.addEventListener('mouseleave', () => { EASY.mouseInside = false; EASY.mouseDown = false; });
+    window.addEventListener('mousedown', (e) => {
+        if (mobileMode || e.button !== 0 || easyModalOpen()) return;
+        if (e.target.closest && e.target.closest('button, input, select, a, .modal-overlay')) return;
+        EASY.mx = e.clientX; EASY.my = e.clientY;
+        const r = canvas.getBoundingClientRect();
+        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+        initAudio();
+        EASY.mouseInside = true;
+        EASY.mouseDown = true;
+        easyFirePrimary();
+    });
+    window.addEventListener('mouseup', () => { EASY.mouseDown = false; });
+    window.addEventListener('blur', () => { EASY.mouseDown = false; });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
     // ============================================================
     //  MOBILE TOUCH CONTROLS
     // ============================================================
@@ -1757,8 +1881,11 @@
         if (!gameActive || gamePaused) return;
         const p = players[i];
         if (!p || !p.alive || p.beingAbducted || p.reload > 0) return;
-        shootBullet(p);                         // fire at the angle the gun is at right now
-        if (mobileAimMode[i] === 'auto') p.aimLock = CONFIG.MOBILE_AIM_FREEZE;   // auto mode: hold the gun still for a moment
+        if (easyAutoAimWanted(i, i)) {          // auto-aim: shoot straight at the nearest enemy
+            const ea = enemyAngleFor(p);
+            if (ea !== null) p.turretAngle = ea;
+        }
+        shootBullet(p);
     }
 
     // ---------- custom layout helpers ----------
@@ -1857,7 +1984,7 @@
                 knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
                 const d = Math.hypot(dx, dy);
                 // screen -> world: when the arena is rotated 90° clockwise, world (x,y) = screen (dy, -dx)
-                touchStick[i] = (d / maxR < 0.25) ? null
+                touchStick[i] = (d / maxR < 0.12) ? null
                     : (rotateView ? { x: dy / d, y: -dx / d } : { x: dx / d, y: dy / d });   // small dead zone
             };
 
@@ -1872,7 +1999,7 @@
                 if (raw > maxR) { dx = dx / raw * maxR; dy = dy / raw * maxR; }
                 const knob = pad.querySelector('.tc-knob');
                 knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-                if (raw / maxR > 0.3) {                       // small dead zone
+                if (raw / maxR > (mobileAimMode[i] === 'auto' ? 0.55 : 0.2)) {   // auto-aim: only a real drag overrides it
                     pad._dragged = true;
                     touchAim[i] = rotateView ? Math.atan2(-dx, dy) : Math.atan2(dy, dx);
                     const tp = players[ONLINE.active ? ONLINE.mySlot : i];
@@ -1884,9 +2011,11 @@
                 const knob = pad.querySelector('.tc-knob');
                 if (knob) knob.style.transform = 'translate(-50%, -50%)';
                 pad.classList.remove('active', 'pressed');
-                const wasDown = pad._down;
+                const wasDown = pad._down, wasDragged = pad._dragged;
                 pad._down = false; pad._dragged = false;
-                if (wasDown && doFire) mobileShoot(i);        // fires along the aimed direction
+                EASY.hold[i] = false;
+                const tapAlreadyFired = mobileAimMode[i] === 'auto' && !wasDragged;
+                if (wasDown && doFire && !tapAlreadyFired) mobileShoot(i);        // drag-aim: fires on release
                 touchAim[i] = null;
             };
 
@@ -1906,6 +2035,8 @@
                     pad._down = true; pad._dragged = false;
                     pad.classList.add('active', 'pressed');
                     aimFromPointer(pad, e);
+                    const pi = parseInt(pad.dataset.player);
+                    if (mobileAimMode[pi] === 'auto' && !pad._dragged) { EASY.hold[pi] = true; mobileShoot(pi); }   // tap = fire now
                 }
             });
             box.addEventListener('pointermove', (e) => {
@@ -1934,7 +2065,7 @@
                 const i = parseInt(btn.dataset.player);
                 mobileAimMode[i] = mobileAimMode[i] === 'auto' ? 'manual' : 'auto';
                 if (players[i]) players[i].aimLock = 0;
-                btn.textContent = mobileAimMode[i] === 'auto' ? '🔄 AUTO' : '🎯 MANUAL';
+                btn.textContent = mobileAimMode[i] === 'auto' ? '🎯 AUTO-AIM' : '✋ MANUAL';
                 saveMobileAimMode();
             });
             // ---- layout edit mode: drag any control anywhere ----
@@ -1973,7 +2104,7 @@
             if (!p) continue;
             html += `<div class="tc-group tc-p${i}" style="--pc:${p.color};--pcl:${p.lightColor}">
                 <div class="tc-name">${escapeHtml(p.name)}</div>
-                <button type="button" class="tc-mode" data-player="${i}" aria-label="Toggle aim mode">${mobileAimMode[i] === 'auto' ? '🔄 AUTO' : '🎯 MANUAL'}</button>
+                <button type="button" class="tc-mode" data-player="${i}" aria-label="Toggle aim mode">${mobileAimMode[i] === 'auto' ? '🎯 AUTO-AIM' : '✋ MANUAL'}</button>
                 <div class="tc-stick" data-player="${i}"><div class="tc-knob"></div></div>
                 <div class="tc-fire" data-player="${i}" aria-label="Aim and fire"><div class="tc-knob">💥</div></div>
             </div>`;
@@ -2879,13 +3010,17 @@
             if (keysPressed[km.rotateL]) { p.turretAngle -= CONFIG.TANK_ROTATION_SPEED; rotatingTurret = true; }
             if (keysPressed[km.rotateR]) { p.turretAngle += CONFIG.TANK_ROTATION_SPEED; rotatingTurret = true; }
 
+            if (!mobileMode && !isRemoteSlot(i)) {
+                p.turretAngle = easyDesktopAim(p, i, rotatingTurret, p.turretAngle);
+            }
+
             if (mobileMode && !isRemoteSlot(i)) {
                 if (touchAim[i] !== null && touchAim[i] !== undefined) {
                     p.turretAngle = touchAim[i];              // player is aiming by hand
                 } else if (mobileAimMode[i] === 'auto') {
-                    // Auto mode: gun spins anti-clockwise on its own, unless locked after a shot
-                    if (p.aimLock > 0) p.aimLock--;
-                    else p.turretAngle -= CONFIG.MOBILE_TURRET_SPEED;
+                    // Auto-aim: the gun follows the nearest enemy by itself
+                    const ea = enemyAngleFor(p);
+                    if (ea !== null) p.turretAngle = lerpAngle(p.turretAngle, ea, 0.22);
                 } else {
                     p.aimLock = 0;                            // manual mode: gun stays where you left it
                 }
@@ -5354,6 +5489,7 @@
     //  GAME LOOP
     // ============================================================
     function gameLoop() {
+        easyHoldFire();
         if (isOnlineGuest()) guestFrame();
         else {
             update();
@@ -5884,6 +6020,10 @@
     function guestFire() {
         if (ONLINE.lobby) return;
         const me = players[ONLINE.mySlot];
+        if (me && me.alive && easyAutoAimWanted(ONLINE.mySlot, 0)) {      // auto-aim: shoot at the nearest enemy
+            const ea = enemyAngleFor(me);
+            if (ea !== null) { ONLINE.localAim = ea; me.turretAngle = ea; }
+        }
         if (me && me.alive && me.reload <= 0 && !gamePaused && gameActive) {
             // instant feedback: sound, muzzle sparks and a visual-only bullet (the host stays the judge)
             const cx = me.x + CONFIG.TANK_SIZE / 2, cy = me.y + CONFIG.TANK_SIZE / 2;
@@ -5909,7 +6049,6 @@
         }
         ONLINE.fireSeq++;
         ONLINE.fireTimes[ONLINE.fireSeq] = performance.now();
-        if (mobileAimMode[0] === 'auto') ONLINE.aimLock = CONFIG.MOBILE_AIM_FREEZE;
         guestSendInput(true);
     }
 
@@ -5925,12 +6064,15 @@
             if (keysPressed[k.right]) mx += 1;
             if (keysPressed[k.rotateL]) ONLINE.localAim -= CONFIG.TANK_ROTATION_SPEED;
             if (keysPressed[k.rotateR]) ONLINE.localAim += CONFIG.TANK_ROTATION_SPEED;
+            if (!mobileMode) {
+                ONLINE.localAim = easyDesktopAim(me, ONLINE.mySlot, !!(keysPressed[k.rotateL] || keysPressed[k.rotateR]), ONLINE.localAim);
+            }
             if (mobileMode) {
                 if (touchAim[0] !== null && touchAim[0] !== undefined) {
                     ONLINE.localAim = touchAim[0];
                 } else if (mobileAimMode[0] === 'auto') {
-                    if (ONLINE.aimLock > 0) ONLINE.aimLock--;
-                    else ONLINE.localAim -= CONFIG.MOBILE_TURRET_SPEED;
+                    const ea = enemyAngleFor(me);
+                    if (ea !== null) ONLINE.localAim = lerpAngle(ONLINE.localAim, ea, 0.22);
                 } else {
                     ONLINE.aimLock = 0;
                 }
@@ -6852,16 +6994,19 @@
         });
     }
 
-    if (!restoreGameState()) resetGame(playerCount);
-
-    // autosave: every second, and whenever the page is hidden / refreshed / closed
-    setInterval(() => { if (!layoutEditMode) saveGameState(); }, 1000);
-    document.addEventListener('visibilitychange', () => { if (document.hidden) saveGameState(); });
-    window.addEventListener('pagehide', saveGameState);
-    window.addEventListener('beforeunload', saveGameState);
+    // always open on a fresh, RUNNING game (an old saved game used to come back paused)
+    clearSavedGame();
+    resetGame(playerCount);
+    gamePaused = false;
+    updatePauseButton();
+    updatePauseOverlay();
 
     gfxInit();
     gameLoop();
+    setTimeout(() => {
+        gfxToast(mobileMode ? 'Left stick = move · TAP the 💥 pad = auto-aim & fire (hold = keep firing)'
+                            : 'Move: WASD · Aim: mouse · Fire: click or SPACE · T = auto-aim on/off');
+    }, 600);
 
     // invite links look like  tank_battle.html?room=ABCDE
     (function () {
