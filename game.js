@@ -5570,10 +5570,10 @@
         lastStateT: 0,
         // guest side
         worldRound: -1, pendingState: null, stateT: 0, hudSig: '', timeSig: '', modalKey: '',
-        fireSeq: 0, localAim: 0, aimInit: false, aimLock: 0,
+        fireSeq: 0, localAim: 0, aimInit: false, aimLock: 0, pred: [], fireTimes: {}, ping: 0, pingShown: -1,
         lastInputKey: '', lastInputT: 0,
     };
-    const STATE_SEND_MS = 50;                       // 20 snapshots per second
+    const STATE_SEND_MS = 33;                       // ~30 snapshots per second
     const isRemoteSlot = (i) => ONLINE.active && ONLINE.role === 'host' && i !== 0;
     const isOnlineGuest = () => ONLINE.active && ONLINE.role === 'guest';
     const byId = (id) => document.getElementById(id);
@@ -5620,6 +5620,7 @@
                 missilePower: p.missilePower, hasPowerup: p.hasPowerup, respawnTimer: p.respawnTimer,
                 capturedFlags: p.capturedFlags, beingAbducted: p.beingAbducted,
                 abductTimer: p.abductTimer, aimLock: p.aimLock, stuckTimer: p.stuckTimer,
+                fs: ONLINE.lastFire[p.index] || 0,
             })),
             b: bullets,
             m: missiles.map(m => ({ x: m.x, y: m.y, vx: m.vx, vy: m.vy, owner: m.owner, life: m.life,
@@ -5790,8 +5791,21 @@
         const me = players[ONLINE.mySlot];
         if (me && !ONLINE.aimInit) { ONLINE.localAim = me.tt !== undefined ? me.tt : me.turretAngle; ONLINE.aimInit = true; }
 
-        bullets = s.b || [];
+        // ping = time between pressing fire and the host confirming it
+        const mine = (s.p || [])[ONLINE.mySlot];
+        if (mine) {
+            const done = mine.fs || 0;
+            for (const q in ONLINE.fireTimes) {
+                if (+q <= done) {
+                    ONLINE.ping = Math.round(performance.now() - ONLINE.fireTimes[q]);
+                    delete ONLINE.fireTimes[q];
+                }
+            }
+            ONLINE.pred = ONLINE.pred.filter(b => b.seq > done);   // host's real bullet replaces our guess
+        }
+        bullets = (s.b || []);
         for (const b of bullets) { b.bx = b.x; b.by = b.y; }
+        for (const b of ONLINE.pred) bullets.push(b);
         missiles = (s.m || []);
         for (const m of missiles) { m.bx = m.x; m.by = m.y; m.trail = []; }
         powerupDrops = s.pu || [];
@@ -5847,7 +5861,32 @@
     }
 
     function guestFire() {
+        const me = players[ONLINE.mySlot];
+        if (me && me.alive && me.reload <= 0 && !gamePaused && gameActive) {
+            // instant feedback: sound, muzzle sparks and a visual-only bullet (the host stays the judge)
+            const cx = me.x + CONFIG.TANK_SIZE / 2, cy = me.y + CONFIG.TANK_SIZE / 2;
+            const sx = cx + Math.cos(me.turretAngle) * 26, sy = cy + Math.sin(me.turretAngle) * 26;
+            if (!(me.missilePower && me.missilePower.timer > 0)) {
+                const pb = {
+                    x: sx, y: sy, bx: sx, by: sy, t0: performance.now(),
+                    vx: Math.cos(me.turretAngle) * CONFIG.BULLET_SPEED,
+                    vy: Math.sin(me.turretAngle) * CONFIG.BULLET_SPEED,
+                    owner: me.index, life: CONFIG.BULLET_LIFE, color: me.lightColor, seq: ONLINE.fireSeq + 1,
+                };
+                ONLINE.pred.push(pb);
+                bullets.push(pb);
+                playSound('shoot');
+            }
+            for (let i = 0; i < 8; i++) {
+                const a = me.turretAngle + rand(-0.4, 0.4), sp = rand(1, 4);
+                particles.push({ x: sx, y: sy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                    life: rand(8, 18), maxLife: 18, size: rand(2, 5), color: '#ffdd44', type: 'spark' });
+            }
+            screenShake = Math.max(screenShake, 4);
+            me.reload = CONFIG.RELOAD_TIME;
+        }
         ONLINE.fireSeq++;
+        ONLINE.fireTimes[ONLINE.fireSeq] = performance.now();
         if (mobileAimMode[0] === 'auto') ONLINE.aimLock = CONFIG.MOBILE_AIM_FREEZE;
         guestSendInput(true);
     }
@@ -5890,7 +5929,7 @@
         const key = inp.x + ',' + inp.y + ',' + inp.a + ',' + inp.f;
         const now = performance.now();
         const since = now - ONLINE.lastInputT;
-        if (force || (key !== ONLINE.lastInputKey && since >= 45) || since > 1000) {
+        if (force || (key !== ONLINE.lastInputKey && since >= 30) || since > 1000) {
             ONLINE.lastInputKey = key;
             ONLINE.lastInputT = now;
             TankNet.sendInput(inp);
@@ -5918,7 +5957,19 @@
 
         if (!gamePaused) {
             const k = Math.min(4, (performance.now() - ONLINE.stateT) / 16.667);
-            for (const b of bullets) { b.x = b.bx + b.vx * k; b.y = b.by + b.vy * k; }
+            const nowT = performance.now();
+            for (const b of bullets) {
+                const kk = b.t0 ? (nowT - b.t0) / 16.667 : k;
+                b.x = b.bx + b.vx * kk; b.y = b.by + b.vy * kk;
+            }
+            ONLINE.pred = ONLINE.pred.filter(b => {
+                if ((nowT - b.t0) / 16.667 > b.life) return false;
+                if (b.x < -30 || b.x > CONFIG.CANVAS_W + 30 || b.y < -30 || b.y > CONFIG.CANVAS_H + 30) return false;
+                for (const o of obstacles) if (circleRectCollide(b.x, b.y, CONFIG.BULLET_RADIUS, o)) return false;
+                for (const o of extraObstacles) if (circleRectCollide(b.x, b.y, CONFIG.BULLET_RADIUS, o)) return false;
+                return true;
+            });
+            bullets = bullets.filter(b => !b.t0 || ONLINE.pred.includes(b));
             for (const m of missiles) {
                 m.x = m.bx + m.vx * k; m.y = m.by + m.vy * k;
                 m.trail = [];
@@ -5942,6 +5993,7 @@
             }
             updateCosmetics();
         }
+        if (ONLINE.ping && ONLINE.ping !== ONLINE.pingShown && frameCount % 30 === 0) { ONLINE.pingShown = ONLINE.ping; updateRoomBadge(); }
         guestSendInput(false);
     }
 
@@ -6139,7 +6191,8 @@
             badge.className = 'room-badge';
             document.querySelector('.canvas-container').appendChild(badge);
         }
-        badge.innerHTML = `<span class="rb-label">ROOM</span><span class="rb-code">${escapeHtml(ONLINE.code)}</span>`;
+        const pg = (ONLINE.role === 'guest' && ONLINE.ping) ? `<span class="rb-ping ${ONLINE.ping > 400 ? 'bad' : ONLINE.ping > 200 ? 'mid' : 'good'}">${ONLINE.ping}ms</span>` : '';
+        badge.innerHTML = `<span class="rb-label">ROOM</span><span class="rb-code">${escapeHtml(ONLINE.code)}</span>${pg}`;
     }
 
     function leaveOnline(message) {

@@ -2468,3 +2468,7 @@ body.online-host .player-selector { display: none !important; }
     .room-badge { top: 6px; font-size: 0.64rem; padding: 3px 9px; }
     .online-content { padding: 22px 18px; }
 }
+.room-badge .rb-ping { font-weight: bold; letter-spacing: 0; }
+.room-badge .rb-ping.good { color: #6bff9a; }
+.room-badge .rb-ping.mid  { color: #ffd54a; }
+.room-badge .rb-ping.bad  { color: #ff7a6b; }
