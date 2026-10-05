@@ -2472,3 +2472,71 @@ body.online-host .player-selector { display: none !important; }
 .room-badge .rb-ping.good { color: #6bff9a; }
 .room-badge .rb-ping.mid  { color: #ffd54a; }
 .room-badge .rb-ping.bad  { color: #ff7a6b; }
+
+/* ============================================================
+   GRAPHICS / ZOOM
+   ============================================================ */
+.zoom-btn, .controls-btn { display: none !important; }
+body.online-active .zoom-btn, body.online-active .controls-btn { display: flex !important; }
+body.mobile-mode.online-active .zoom-btn, body.mobile-mode.online-active .controls-btn { display: none !important; }
+body.mobile-mode.online-active .game-header.menu-open .zoom-btn,
+body.mobile-mode.online-active .game-header.menu-open .controls-btn { display: flex !important; }
+
+/* richer colours in HIGH graphics */
+body.gfx-high #gameCanvas { filter: contrast(1.06) saturate(1.14); }
+
+.gfx-toast {
+    position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%);
+    max-width: 80%; text-align: center; padding: 8px 16px; border-radius: 12px;
+    background: rgba(10, 15, 8, 0.85); border: 1px solid rgba(168, 212, 122, 0.45);
+    color: #eaf5dc; font-weight: bold; letter-spacing: 1px; font-size: 0.85rem;
+    pointer-events: none; opacity: 0; z-index: 30;
+}
+.gfx-toast.show { animation: gfxToast 2.2s ease forwards; }
+@keyframes gfxToast { 0% { opacity: 0; } 10% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; } }
+body.rotate-view .gfx-toast { transform: translateX(-50%); }
+
+/* ============================================================
+   TANK COLOUR PICKER (online lobby)
+   ============================================================ */
+.color-label { margin-top: 4px; }
+.color-label span { color: #f1e27a; letter-spacing: 1px; }
+.color-swatches { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; padding: 2px 0 4px; }
+.swatch {
+    position: relative; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; padding: 0;
+    border: 3px solid rgba(255, 255, 255, 0.18);
+    background: radial-gradient(circle at 35% 30%, var(--l), var(--c) 55%, var(--d));
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+.swatch:hover { transform: scale(1.1); }
+.swatch.selected {
+    border-color: #fff; transform: scale(1.15);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6), 0 0 14px var(--l);
+}
+.swatch.selected::after {
+    content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 17px; font-weight: 900; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.swatch.taken { opacity: 0.28; cursor: not-allowed; filter: grayscale(0.6); }
+.swatch.taken:hover { transform: none; }
+.swatch.taken::after {
+    content: '✕'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 15px; font-weight: 900;
+}
+@media (max-width: 600px) { .swatch { width: 32px; height: 32px; } .color-swatches { gap: 7px; } }
+
+/* ============================================================
+   MY CONTROLS (online)
+   ============================================================ */
+.oc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 7px 12px; border-radius: 10px; background: rgba(0, 0, 0, 0.28); border: 1px solid rgba(168, 212, 122, 0.2); }
+.oc-label { font-weight: bold; color: #eaf5dc; font-size: 0.9rem; text-align: left; }
+.oc-key { min-width: 88px; padding: 7px 12px; font-family: inherit; font-weight: 900; font-size: 0.9rem; letter-spacing: 1px;
+    color: #f1e27a; background: rgba(0, 0, 0, 0.45); border: 2px solid #4f6b3e; border-radius: 8px; cursor: pointer; }
+.oc-key:hover { border-color: #a8d47a; }
+.oc-key.listening { color: #fff; border-color: #f1e27a; background: rgba(241, 226, 122, 0.15); animation: ocPulse 1s ease-in-out infinite; }
+@keyframes ocPulse { 50% { box-shadow: 0 0 14px rgba(241, 226, 122, 0.55); } }
+.oc-note { font-size: 0.82rem; line-height: 1.45; color: #c8e6a8; text-align: left; }
+#onlineControlsModal .online-screen { max-height: 52vh; overflow-y: auto; }

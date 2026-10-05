@@ -39,6 +39,15 @@
                 <button class="header-btn settings-btn fs-btn" id="fullscreenBtn" title="Fullscreen">
                     <span>⛶</span> FULLSCREEN
                 </button>
+                <button class="header-btn settings-btn gfx-btn" id="gfxBtn" title="Graphics quality">
+                    <span>✨</span> GRAPHICS
+                </button>
+                <button class="header-btn settings-btn controls-btn" id="controlsBtn" title="My controls (online games)">
+                    <span>🎛️</span> CONTROLS
+                </button>
+                <button class="header-btn settings-btn zoom-btn" id="zoomBtn" title="Camera zoom (online games)">
+                    <span>🔍</span> ZOOM
+                </button>
                 <button class="header-btn menu-toggle" id="menuToggle" aria-label="Menu">
                     <span>☰</span>
                 </button>
@@ -118,6 +127,8 @@
             <div class="online-screen" id="onlineMenu">
                 <label class="online-label" for="onlineName">YOUR NAME</label>
                 <input id="onlineName" class="online-input" maxlength="12" placeholder="Commander" autocomplete="off">
+                <div class="online-label color-label">YOUR TANK COLOR · <span id="onlineColorName"></span></div>
+                <div class="color-swatches" id="onlineColorsMenu"></div>
                 <button class="modal-btn play-again online-wide" id="onlineCreateBtn">🎮 CREATE ROOM</button>
                 <div class="online-or">— or join a friend —</div>
                 <div class="online-join-row">
@@ -125,6 +136,7 @@
                     <button class="modal-btn play-again" id="onlineJoinBtn">JOIN</button>
                 </div>
                 <div class="online-msg" id="onlineMsg"></div>
+                <button class="modal-btn change-players online-wide js-open-controls">🎛️ MY CONTROLS</button>
                 <button class="modal-btn change-players online-wide" id="onlineCloseBtn">CLOSE</button>
             </div>
 
@@ -136,11 +148,37 @@
                     <button class="modal-btn change-players" id="onlineShareBtn">🔗 SHARE LINK</button>
                 </div>
                 <div class="online-players" id="onlinePlayers"></div>
+                <div class="online-label color-label">YOUR TANK COLOR</div>
+                <div class="color-swatches" id="onlineColorsLobby"></div>
+                <button class="modal-btn change-players online-wide js-open-controls">🎛️ MY CONTROLS</button>
                 <div class="online-msg" id="onlineLobbyMsg"></div>
                 <div class="modal-buttons">
                     <button class="modal-btn change-players" id="onlineLeaveBtn">LEAVE</button>
                     <button class="modal-btn play-again" id="onlineStartBtn" disabled>NEED 2+ PLAYERS</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MY CONTROLS (online): keys on laptop, button layout on phone -->
+    <div class="modal-overlay" id="onlineControlsModal">
+        <div class="modal-content online-content">
+            <div class="modal-trophy">🎛️</div>
+            <h2 class="modal-title">MY CONTROLS</h2>
+            <p class="modal-subtitle" id="ocSubtitle">Saved on this device</p>
+
+            <div class="online-screen" id="ocKeys"></div>
+
+            <div class="online-screen" id="ocTouch" style="display:none">
+                <div class="oc-note">Move the joystick, aim pad and MANUAL/AUTO button wherever feels best, and change their size. Saved on this device (separately for portrait and landscape).</div>
+                <button class="modal-btn play-again online-wide" id="ocEditLayoutBtn">✋ EDIT BUTTON LAYOUT</button>
+                <button class="modal-btn change-players online-wide" id="ocResetLayoutBtn">↺ RESET LAYOUT</button>
+            </div>
+
+            <div class="online-msg" id="ocMsg"></div>
+            <div class="modal-buttons">
+                <button class="modal-btn change-players" id="ocResetKeysBtn">↺ DEFAULT KEYS</button>
+                <button class="modal-btn play-again" id="ocDoneBtn">DONE</button>
             </div>
         </div>
     </div>

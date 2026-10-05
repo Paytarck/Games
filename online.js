@@ -3,7 +3,7 @@
  * Data layout (rooms/<CODE>):
  *   hostUid   - uid of the room creator (the "host" runs the simulation)
  *   status    - 'lobby' | 'playing'
- *   players/<uid> = { name, joinedAt }
+ *   players/<uid> = { name, joinedAt, color }   (color = palette index)
  *   input/<uid>   = { x, y, a, f }      guest -> host  (controls)
  *   world         = { r, d }            host  -> guests (map + static data, once per round)
  *   state         = "<json string>"     host  -> guests (snapshot, ~20x / second)
@@ -45,7 +45,9 @@
         return s;
     }
 
-    async function createRoom(name) {
+    const PALETTE_SIZE = 10;
+
+    async function createRoom(name, color) {
         await init();
         for (let tries = 0; tries < 8; tries++) {
             const c = randomCode();
@@ -56,7 +58,7 @@
                     hostUid: uid,
                     status: 'lobby',
                     createdAt: firebase.database.ServerValue.TIMESTAMP,
-                    players: { [uid]: { name: name, joinedAt: 0 } }
+                    players: { [uid]: { name: name, joinedAt: 0, color: (color >= 0 && color < PALETTE_SIZE) ? color : 0 } }
                 };
             });
             if (res.committed) {
@@ -68,7 +70,16 @@
         throw new Error('Could not create a room. Please try again.');
     }
 
-    async function joinRoom(c, name) {
+    // first palette colour that nobody else in `players` uses (preferred one first)
+    function freeColor(players, me, wanted) {
+        const used = {};
+        for (const k in players) if (k !== me && players[k] && Number.isInteger(players[k].color)) used[players[k].color] = true;
+        if (wanted >= 0 && wanted < PALETTE_SIZE && !used[wanted]) return wanted;
+        for (let i = 0; i < PALETTE_SIZE; i++) if (!used[i]) return i;
+        return 0;
+    }
+
+    async function joinRoom(c, name, color) {
         await init();
         c = String(c || '').toUpperCase().trim();
         if (!/^[A-Z0-9]{5}$/.test(c)) throw new Error('A room code has 5 letters / numbers.');
@@ -80,9 +91,9 @@
         let reason = '';
         const res = await ref.child('players').transaction(cur => {
             cur = cur || {};
-            if (cur[uid]) { cur[uid].name = name; return cur; }
+            if (cur[uid]) { cur[uid].name = name; cur[uid].color = freeColor(cur, uid, color); return cur; }
             if (Object.keys(cur).length >= 4) { reason = 'full'; return; }
-            cur[uid] = { name: name, joinedAt: firebase.database.ServerValue.TIMESTAMP };
+            cur[uid] = { name: name, joinedAt: firebase.database.ServerValue.TIMESTAMP, color: freeColor(cur, uid, color) };
             return cur;
         });
         if (!res.committed) throw new Error(reason === 'full' ? 'This room is full (max 4 players).' : 'Could not join the room.');
@@ -108,6 +119,17 @@
     function sendInput(o)        { if (roomRef && role === 'guest') roomRef.child('input/' + uid).set(o); }
     function setWorld(round, d)  { if (roomRef && role === 'host') roomRef.child('world').set({ r: round, d: d }); }
     function sendState(json)     { if (roomRef && role === 'host') roomRef.child('state').set(json); }
+    // change my tank colour; fails (false) if a friend already took it
+    async function setColor(color) {
+        if (!roomRef || !(color >= 0 && color < PALETTE_SIZE)) return false;
+        const res = await roomRef.child('players').transaction(cur => {
+            if (!cur || !cur[uid]) return cur;
+            for (const k in cur) if (k !== uid && cur[k] && cur[k].color === color) return;   // taken -> abort
+            cur[uid].color = color;
+            return cur;
+        });
+        return !!res.committed;
+    }
     function lockRoom()          { if (roomRef && role === 'host') roomRef.child('status').set('playing'); }
 
     function leave() {
@@ -131,7 +153,7 @@
     window.TankNet = {
         available, configured, init, createRoom, joinRoom,
         onPlayers, onRoomGone, onWorld, onState, onInput,
-        sendInput, setWorld, sendState, lockRoom, leave,
+        sendInput, setWorld, sendState, lockRoom, setColor, leave,
         uid: () => uid, code: () => code
     };
 })();

@@ -1590,7 +1590,7 @@
         for (let i = 0; i < playerCount; i++) {
             if (ONLINE.active && i !== ONLINE.mySlot) continue;
             const p = players[i];
-            const k = ONLINE.active ? playerConfigs[0].keys : p.keys;
+            const k = ONLINE.active ? onlineKeys() : p.keys;
             const isLastWinner = !teamModeEnabled && lastWinnerName && p.name === lastWinnerName;
             const crown = isLastWinner ? '<span class="crown-icon">👑</span>' : '';
 
@@ -1725,8 +1725,8 @@
         if (!keysPressed[e.code]) {
             keysPressed[e.code] = true;
             if (isOnlineGuest()) {
-                if (gameActive && e.code === playerConfigs[0].keys.shoot) guestFire();
-            } else if (gameActive) {
+                if (gameActive && !ONLINE.lobby && e.code === onlineKeys().shoot) guestFire();
+            } else if (gameActive && !ONLINE.lobby) {
                 for (let i = 0; i < players.length; i++) {
                     const p = players[i];
                     if (isRemoteSlot(i)) continue;
@@ -1752,6 +1752,7 @@
     //  MOBILE TOUCH CONTROLS
     // ============================================================
     function mobileShoot(i) {
+        if (ONLINE.lobby) return;
         if (isOnlineGuest()) { if (gameActive && !gamePaused) guestFire(); return; }
         if (!gameActive || gamePaused) return;
         const p = players[i];
@@ -1807,7 +1808,7 @@
             const pos = saved || defs[i][part];
             el.style.left = (pos.x * 100) + '%';
             el.style.top = (pos.y * 100) + '%';
-            el.dataset.label = 'P' + (i + 1) + (part === 'stick' ? ' MOVE' : part === 'fire' ? ' AIM' : '');
+            el.dataset.label = ((ONLINE.active ? '' : 'P' + (i + 1)) + (part === 'stick' ? ' MOVE' : part === 'fire' ? ' AIM' : '')).trim();
         });
     }
 
@@ -3610,7 +3611,7 @@
         bar.style.left = ''; bar.style.top = ''; bar.style.transform = '';
         bar.classList.add('active');
         document.getElementById('layoutScale').value = Math.round(controlLayout.scale * 100);
-        if (gameActive && !gamePaused) {
+        if (gameActive && !gamePaused && !ONLINE.active) {      // an online match keeps running for the others
             gamePaused = true;
             settingsPausedGame = true;
             updatePauseButton();
@@ -3632,6 +3633,7 @@
             updatePauseOverlay();
             canvas.focus();
         }
+        onlineAfterLayoutEdit();
     }
 
     function renderSettingsBody() {
@@ -4100,9 +4102,12 @@
         const shakeY = screenShake > 0 ? rand(-screenShake, screenShake) : 0;
 
         ctx.save();
+        ctx.setTransform(GFX.scale, 0, 0, GFX.scale, 0, 0);
         ctx.translate(shakeX, shakeY);
+        gfxCamera();
 
         drawGround();
+        gfxGroundDetail();
         for (const m of mudZones) drawMud(m);
         for (const l of lavaZones) drawLava(l);
         if (brokenFloorActive) for (const t of floorTiles) drawFloorTile(t);
@@ -4154,6 +4159,7 @@
             }
         }
 
+        gfxAdd(true);
         for (const b of bullets) {
             const grd = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, 16);
             grd.addColorStop(0, 'rgba(255, 220, 80, 0.9)');
@@ -4197,6 +4203,8 @@
             ctx.fill();
         }
 
+        gfxAdd(false);
+        gfxTankLights();
         for (const p of players) if (p.alive) drawTank(p);
 
         for (const a of aliens) drawAlien(a);
@@ -4210,6 +4218,7 @@
         for (const pt of particles) {
             const alpha = pt.life / pt.maxLife;
             ctx.globalAlpha = alpha;
+            ctx.globalCompositeOperation = (GFX.hi && (pt.type === 'fire' || pt.type === 'spark')) ? 'lighter' : 'source-over';
             if (pt.type === 'fire') {
                 ctx.fillStyle = pt.color;
                 ctx.beginPath();
@@ -4226,6 +4235,7 @@
             }
         }
         ctx.globalAlpha = 1;
+        gfxAdd(true);
 
         for (const ex of explosions) {
             const alpha = ex.life / ex.maxLife;
@@ -4240,11 +4250,14 @@
             ctx.fill();
         }
 
+        gfxAdd(false);
         for (const p of players) if (!p.alive && (!ctfModeEnabled || p.respawnTimer <= 0)) drawWreck(p);
 
         if (giantTank) drawGiantTank();
 
         ctx.restore();
+        ctx.setTransform(GFX.scale, 0, 0, GFX.scale, 0, 0);
+        gfxPostWorld();
 
         if (suddenDeathActive) {
             const pulse = 0.5 + Math.sin(frameCount * 0.08) * 0.15;
@@ -4280,6 +4293,8 @@
             ctx.fillStyle = 'rgba(255, 60, 0, 0.06)';
             ctx.fillRect(0, 0, CONFIG.CANVAS_W, CONFIG.CANVAS_H);
         }
+        gfxEdgeArrows();
+        gfxFpsWatch();
     }
 
     function drawAlien(a) {
@@ -5572,6 +5587,7 @@
         worldRound: -1, pendingState: null, stateT: 0, hudSig: '', timeSig: '', modalKey: '',
         fireSeq: 0, localAim: 0, aimInit: false, aimLock: 0, pred: [], fireTimes: {}, ping: 0, pingShown: -1,
         lastInputKey: '', lastInputT: 0,
+        myColor: -1, savedColors: null, keys: null, reopen: false,
     };
     const STATE_SEND_MS = 33;                       // ~30 snapshots per second
     const isRemoteSlot = (i) => ONLINE.active && ONLINE.role === 'host' && i !== 0;
@@ -5599,7 +5615,7 @@
             ob: obstacles, mud: mudZones, lava: lavaZones, bases: ctfBases,
             pl: players.map(p => ({
                 index: p.index, name: p.name, color: p.color, lightColor: p.lightColor,
-                darkColor: p.darkColor, team: p.team,
+                darkColor: p.darkColor, team: p.team, ci: playerConfigs[p.index] ? playerConfigs[p.index].colorIndex : p.index,
             })),
             slots: ONLINE.slotUids,
         }, numRound);
@@ -5678,6 +5694,7 @@
         ONLINE.inputs = {};
         ONLINE.lastFire = {};
         players.forEach((p, i) => { if (ONLINE.names[i]) p.name = ONLINE.names[i]; });
+        if (players[0]) players[0].keys = onlineKeys();      // my own saved online keys
         for (const s in ONLINE.left) markLeft(+s);
         updateControlsPanel();
         updateHUD();
@@ -5733,11 +5750,15 @@
             }
         }
 
+        while (playerConfigs.length < w.n) playerConfigs.push(getDefaultConfigs()[playerConfigs.length]);
+        (w.pl || []).forEach(sp => {
+            if (playerConfigs[sp.index] && Number.isInteger(sp.ci)) playerConfigs[sp.index].colorIndex = sp.ci;
+        });
         players = (w.pl || []).map(sp => Object.assign({
             x: 0, y: 0, bodyAngle: 0, turretAngle: 0, hits: 0, alive: true, reload: 0, shield: 0,
             missilePower: null, hasPowerup: false, respawnTimer: 0, capturedFlags: [],
             beingAbducted: false, abductTimer: 0, aimLock: 0, stuckTimer: 0,
-            moveSoundTimer: 0, lavaDamageTimer: 0, keys: playerConfigs[0].keys,
+            moveSoundTimer: 0, lavaDamageTimer: 0, keys: onlineKeys(),
         }, sp));
 
         bullets = []; missiles = []; particles = []; tracks = []; explosions = [];
@@ -5861,6 +5882,7 @@
     }
 
     function guestFire() {
+        if (ONLINE.lobby) return;
         const me = players[ONLINE.mySlot];
         if (me && me.alive && me.reload <= 0 && !gamePaused && gameActive) {
             // instant feedback: sound, muzzle sparks and a visual-only bullet (the host stays the judge)
@@ -5894,7 +5916,7 @@
     function guestComputeInput() {
         const me = players[ONLINE.mySlot];
         if (!me) return { x: 0, y: 0, a: 0, f: ONLINE.fireSeq };
-        const k = playerConfigs[0].keys;
+        const k = onlineKeys();
         let mx = 0, my = 0;
         if (gameActive && !gamePaused && me.alive) {
             if (keysPressed[k.up]) my -= 1;
@@ -6000,10 +6022,91 @@
     // ------------------------------------------------------------
     //  LOBBY / ROOM UI
     // ------------------------------------------------------------
-    function onlineModalOpen() {
-        const m = byId('onlineModal');
+    function controlsModalOpen() {
+        const m = byId('onlineControlsModal');
         return !!(m && m.classList.contains('active'));
     }
+    function onlineModalOpen() {
+        const m = byId('onlineModal');
+        return !!(m && m.classList.contains('active')) || controlsModalOpen();
+    }
+
+    // ------------------------------------------------------------
+    //  MY CONTROLS: own keys (laptop) / own button layout (phone), saved in localStorage
+    // ------------------------------------------------------------
+    const OKEYS_KEY = 'tankBattle_onlineKeys';
+    function validKeys(k) {
+        if (!k || typeof k !== 'object') return false;
+        const seen = {};
+        for (const a of ACTIONS) {
+            const v = k[a.key];
+            if (typeof v !== 'string' || !v || v === 'Escape' || seen[v]) return false;
+            seen[v] = true;
+        }
+        return true;
+    }
+    function defaultOnlineKeys() {
+        const base = (playerConfigs[0] && validKeys(playerConfigs[0].keys)) ? playerConfigs[0].keys : getDefaultConfigs()[0].keys;
+        const o = {};
+        for (const a of ACTIONS) o[a.key] = base[a.key];
+        return o;
+    }
+    // one shared object, so the host's tank always sees edits instantly
+    function onlineKeys() {
+        if (!ONLINE.keys) {
+            let k = null;
+            try { k = JSON.parse(localStorage.getItem(OKEYS_KEY) || 'null'); } catch (e) {}
+            ONLINE.keys = validKeys(k) ? k : defaultOnlineKeys();
+        }
+        return ONLINE.keys;
+    }
+    function saveOnlineKeys() {
+        try { localStorage.setItem(OKEYS_KEY, JSON.stringify(onlineKeys())); } catch (e) {}
+    }
+    let ocListening = null;
+    function setOcMsg(t, err) {
+        const el = byId('ocMsg');
+        if (!el) return;
+        el.textContent = t || '';
+        el.classList.toggle('error', !!err);
+    }
+    function renderControlsModal() {
+        byId('ocKeys').style.display = mobileMode ? 'none' : '';
+        byId('ocTouch').style.display = mobileMode ? '' : 'none';
+        byId('ocResetKeysBtn').style.display = mobileMode ? 'none' : '';
+        byId('ocSubtitle').textContent = mobileMode
+            ? 'Place your buttons where your thumbs like them'
+            : 'Click a key, then press the new one. Saved on this device.';
+        if (mobileMode) return;
+        const k = onlineKeys();
+        let html = '';
+        for (const a of ACTIONS) {
+            const on = ocListening === a.key;
+            html += `<div class="oc-row"><span class="oc-label">${a.label}</span>
+                <button type="button" class="oc-key${on ? ' listening' : ''}" data-act="${a.key}">${on ? 'press a key…' : escapeHtml(formatKeyName(k[a.key]))}</button></div>`;
+        }
+        byId('ocKeys').innerHTML = html;
+    }
+    function openControlsModal() {
+        ocListening = null;
+        setOcMsg('');
+        Object.keys(keysPressed).forEach(c => { keysPressed[c] = false; });      // nothing stays "held down"
+        touchStick = [null, null, null, null];
+        touchAim = [null, null, null, null];
+        renderControlsModal();
+        byId('onlineControlsModal').classList.add('active');
+    }
+    function closeControlsModal() {
+        ocListening = null;
+        byId('onlineControlsModal').classList.remove('active');
+        if (!ONLINE.lobby && ONLINE.active) canvas.focus();
+    }
+    function onlineAfterLayoutEdit() {
+        if (!ONLINE.reopen) return;
+        ONLINE.reopen = false;
+        if (!ONLINE.active || ONLINE.lobby) byId('onlineModal').classList.add('active');
+    }
+
     const cleanName = (s) => String(s || '').replace(/[<>]/g, '').trim().slice(0, 12);
 
     function setOnlineMsg(text, isError) {
@@ -6034,6 +6137,7 @@
         if (!nameEl.value) {
             try { nameEl.value = localStorage.getItem('tankBattle_onlineName') || ''; } catch (e) {}
         }
+        renderColorSwatches();
         if (prefillCode) byId('onlineCode').value = String(prefillCode).toUpperCase().slice(0, 5);
         showOnlineScreen(ONLINE.active ? 'lobby' : 'menu');
         setOnlineMsg(message || (TankNet.configured() ? '' : 'Firebase is not set up yet - open firebase-config.js and paste your project settings.'), !!message || !TankNet.configured());
@@ -6052,6 +6156,69 @@
         for (const id of ['onlineCreateBtn', 'onlineJoinBtn']) byId(id).disabled = !!b;
     }
 
+    // ---- tank colour choice (saved in localStorage) ----
+    const COLOR_KEY = 'tankBattle_onlineColor';
+    function savedColorPref() {
+        try {
+            const v = parseInt(localStorage.getItem(COLOR_KEY));
+            return Number.isInteger(v) && v >= 0 && v < COLOR_PALETTE.length ? v : -1;
+        } catch (e) { return -1; }
+    }
+    function colorsTakenByOthers() {
+        const taken = {};
+        const me = TankNet.uid();
+        for (const u in ONLINE.playersMap) {
+            const c = ONLINE.playersMap[u] && ONLINE.playersMap[u].color;
+            if (u !== me && Number.isInteger(c)) taken[c] = true;
+        }
+        return taken;
+    }
+    function renderColorSwatches() {
+        const sel = ONLINE.active ? ONLINE.myColor : savedColorPref();
+        const taken = ONLINE.active ? colorsTakenByOthers() : {};
+        let html = '';
+        COLOR_PALETTE.forEach((c, i) => {
+            const cls = 'swatch' + (i === sel ? ' selected' : '') + (taken[i] ? ' taken' : '');
+            html += `<button type="button" class="${cls}" data-color="${i}" title="${c.name}${taken[i] ? ' (taken)' : ''}"
+                style="--c:${c.color};--l:${c.light};--d:${c.dark}" aria-label="${c.name}"></button>`;
+        });
+        for (const id of ['onlineColorsMenu', 'onlineColorsLobby']) {
+            const el = byId(id);
+            if (el) el.innerHTML = html;
+        }
+        const nm = byId('onlineColorName');
+        if (nm) nm.textContent = sel >= 0 && COLOR_PALETTE[sel] ? COLOR_PALETTE[sel].name : 'auto';
+    }
+    async function pickColor(i) {
+        if (!(i >= 0 && i < COLOR_PALETTE.length)) return;
+        if (ONLINE.active) {
+            if (!ONLINE.lobby) return;                              // colours are locked once the match starts
+            if (colorsTakenByOthers()[i]) { setOnlineMsg('A friend already uses that color.', true); return; }
+            const ok = await TankNet.setColor(i);
+            if (!ok) { setOnlineMsg('A friend just took that color - pick another.', true); renderColorSwatches(); return; }
+            ONLINE.myColor = i;
+            setOnlineMsg('');
+        }
+        try { localStorage.setItem(COLOR_KEY, String(i)); } catch (e) {}
+        if (!ONLINE.active) ONLINE.myColor = i;
+        renderColorSwatches();
+    }
+    // host: every player gets a different colour (pick order = slot order, conflicts fall back to a free one)
+    function resolveSlotColors(uids) {
+        const used = {}, out = [];
+        const map = ONLINE.playersMap || {};
+        uids.forEach((u, slot) => {
+            let c = map[u] && map[u].color;
+            if (!Number.isInteger(c) || c < 0 || c >= COLOR_PALETTE.length || used[c]) {
+                c = 0;
+                while (used[c] && c < COLOR_PALETTE.length - 1) c++;
+            }
+            used[c] = true;
+            out.push(c);
+        });
+        return out;
+    }
+
     function beginOnline(role, code, name) {
         ONLINE.active = true;
         ONLINE.role = role;
@@ -6059,11 +6226,13 @@
         ONLINE.lobby = true;
         ONLINE.myName = name;
         ONLINE.prevCount = playerCount;
+        ONLINE.savedColors = playerConfigs.map(c => c.colorIndex);
         ONLINE.mySlot = 0; ONLINE.count = 0; ONLINE.round = 0; ONLINE.worldRound = -1;
         ONLINE.names = []; ONLINE.slotUids = []; ONLINE.playersMap = {}; ONLINE.left = {};
         ONLINE.inputs = {}; ONLINE.lastFire = {}; ONLINE.events = []; ONLINE.pendingState = null;
         ONLINE.fireSeq = 0; ONLINE.aimInit = false; ONLINE.aimLock = 0;
         document.body.classList.add('online-active', 'online-' + role);
+        buildTouchControls();                      // online = one control set (yours)
         byId('changePlayersBtn').textContent = 'LEAVE ROOM';
 
         TankNet.onPlayers(onLobbyPlayers);
@@ -6088,7 +6257,7 @@
         const name = readName();
         setOnlineBusy(true); setOnlineMsg('Creating room...');
         try {
-            const code = await TankNet.createRoom(name);
+            const code = await TankNet.createRoom(name, savedColorPref());
             beginOnline('host', code, name);
         } catch (e) {
             setOnlineMsg(e && e.message ? e.message : 'Could not create the room.', true);
@@ -6101,7 +6270,7 @@
         if (!code) { setOnlineMsg('Type the room code your friend sent you.', true); return; }
         setOnlineBusy(true); setOnlineMsg('Joining...');
         try {
-            await TankNet.joinRoom(code, name);
+            await TankNet.joinRoom(code, name, savedColorPref());
             beginOnline('guest', code, name);
         } catch (e) {
             setOnlineMsg(e && e.message ? e.message : 'Could not join the room.', true);
@@ -6124,10 +6293,9 @@
         const uids = sortedPlayerUids();
         let html = '';
         for (let i = 0; i < 4; i++) {
-            const cfg = playerConfigs[i] || getDefaultConfigs()[i];
-            const pal = COLOR_PALETTE[cfg.colorIndex] || COLOR_PALETTE[i];
             const u = uids[i];
             const info = u ? ONLINE.playersMap[u] : null;
+            const pal = COLOR_PALETTE[info && Number.isInteger(info.color) ? info.color : i] || COLOR_PALETTE[i];
             const isMe = u && u === TankNet.uid();
             html += `<div class="online-player ${info ? '' : 'empty'}">
                 <span class="player-dot" style="background:${pal.color};color:${pal.color}"></span>
@@ -6145,6 +6313,9 @@
 
     function onLobbyPlayers(map) {
         ONLINE.playersMap = map || {};
+        const mine = ONLINE.playersMap[TankNet.uid()];
+        if (mine && Number.isInteger(mine.color)) ONLINE.myColor = mine.color;
+        if (ONLINE.lobby) renderColorSwatches();
         if (ONLINE.lobby) { renderLobby(); return; }
         // game already running: if a friend dropped out, remove their tank (host only)
         if (ONLINE.role === 'host') {
@@ -6171,6 +6342,7 @@
         });
         ONLINE.count = ONLINE.slotUids.length;
         while (playerConfigs.length < ONLINE.count) playerConfigs.push(getDefaultConfigs()[playerConfigs.length]);
+        resolveSlotColors(ONLINE.slotUids).forEach((c, i) => { playerConfigs[i].colorIndex = c; });
 
         ONLINE.lobby = false;
         ONLINE.left = {};
@@ -6200,6 +6372,10 @@
         TankNet.leave();
         ONLINE.active = false; ONLINE.role = null; ONLINE.lobby = false;
         ONLINE.pendingState = null; ONLINE.round = 0; ONLINE.inputs = {};
+        if (ONLINE.savedColors) {
+            ONLINE.savedColors.forEach((c, i) => { if (playerConfigs[i]) playerConfigs[i].colorIndex = c; });
+            ONLINE.savedColors = null;
+        }
         document.body.classList.remove('online-active', 'online-host', 'online-guest');
         byId('changePlayersBtn').textContent = 'CHANGE PLAYERS';
         winModal.classList.remove('active');
@@ -6216,6 +6392,62 @@
 
     // ---- wiring ----
     (function wireOnlineUI() {
+        document.querySelectorAll('.js-open-controls').forEach(b => b.addEventListener('click', () => { playSound('click'); openControlsModal(); }));
+        byId('controlsBtn').addEventListener('click', () => { playSound('click'); openControlsModal(); });
+        byId('ocDoneBtn').addEventListener('click', () => { playSound('click'); closeControlsModal(); });
+        byId('ocKeys').addEventListener('click', (e) => {
+            const b = e.target.closest('.oc-key');
+            if (!b) return;
+            ocListening = ocListening === b.dataset.act ? null : b.dataset.act;
+            setOcMsg(ocListening ? 'Now press the key you want (Esc = cancel)' : '');
+            renderControlsModal();
+        });
+        byId('ocResetKeysBtn').addEventListener('click', () => {
+            Object.assign(onlineKeys(), defaultOnlineKeys());
+            try { localStorage.removeItem(OKEYS_KEY); } catch (e) {}
+            ocListening = null;
+            setOcMsg('Keys reset to default.');
+            renderControlsModal();
+        });
+        // capture the next key press for a binding
+        window.addEventListener('keydown', (e) => {
+            if (!ocListening || !controlsModalOpen()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (isModifierKey(e.code)) return;
+            if (e.code === 'Escape') { ocListening = null; setOcMsg(''); renderControlsModal(); return; }
+            const k = onlineKeys();
+            const clash = ACTIONS.find(a => a.key !== ocListening && k[a.key] === e.code);
+            if (clash) { setOcMsg(`"${formatKeyName(e.code)}" is already used for ${clash.label}`, true); return; }
+            k[ocListening] = e.code;
+            saveOnlineKeys();
+            ocListening = null;
+            setOcMsg('Saved ✓');
+            playSound('click');
+            renderControlsModal();
+            updateControlsPanel();
+        }, true);
+        byId('ocEditLayoutBtn').addEventListener('click', () => {
+            ONLINE.reopen = byId('onlineModal').classList.contains('active');
+            byId('onlineModal').classList.remove('active');
+            closeControlsModal();
+            playSound('click');
+            enterLayoutEdit();
+        });
+        byId('ocResetLayoutBtn').addEventListener('click', (e) => {
+            controlLayout = { scale: 1, landscape: {}, portrait: {} };
+            saveControlLayout();
+            applyControlLayout();
+            setOcMsg('Layout reset ✓');
+            playSound('click');
+        });
+        for (const id of ['onlineColorsMenu', 'onlineColorsLobby']) {
+            byId(id).addEventListener('click', (e) => {
+                const b = e.target.closest('.swatch');
+                if (b) pickColor(parseInt(b.dataset.color));
+            });
+        }
+        renderColorSwatches();
         byId('onlineBtn').addEventListener('click', () => openOnlineModal());
         byId('onlineCreateBtn').addEventListener('click', onlineCreate);
         byId('onlineJoinBtn').addEventListener('click', onlineJoin);
@@ -6239,6 +6471,282 @@
             } catch (e) { /* share dialog dismissed */ }
         });
     })();
+
+    // ============================================================
+    //  GRAPHICS + CAMERA
+    //   - sharp canvas (resolution follows the screen, up to 2x)
+    //   - HIGH quality: ground grain/mottling, lighting, tank shadows + glow,
+    //     additive bloom on shots / explosions, floating dust
+    //   - ZOOM camera (online games): follows your tank, arrows point at off-screen enemies
+    // ============================================================
+    const GFX = {
+        hi: true, scale: 1, zoom: 1, zooms: [1, 1.5, 2, 2.5],
+        camX: 0, camY: 0, camReady: false,
+        grain: null, mottle: null, builtScale: 0,
+        dt: [], lastT: 0, auto: false,
+    };
+    const GFX_KEYS = { Q: 'tankBattle_gfxQuality', Z: 'tankBattle_zoom' };
+
+    function gfxLoadPrefs() {
+        try {
+            const q = localStorage.getItem(GFX_KEYS.Q);
+            if (q === 'low') GFX.hi = false;
+            const z = parseFloat(localStorage.getItem(GFX_KEYS.Z));
+            GFX.zoom = GFX.zooms.includes(z) ? z : (mobileMode ? 2 : 1);
+        } catch (e) { GFX.zoom = mobileMode ? 2 : 1; }
+    }
+    function gfxSavePrefs() {
+        try {
+            localStorage.setItem(GFX_KEYS.Q, GFX.hi ? 'high' : 'low');
+            localStorage.setItem(GFX_KEYS.Z, String(GFX.zoom));
+        } catch (e) {}
+    }
+
+    function gfxToast(text) {
+        const box = document.querySelector('.canvas-container');
+        if (!box) return;
+        let t = document.getElementById('gfxToast');
+        if (!t) { t = document.createElement('div'); t.id = 'gfxToast'; t.className = 'gfx-toast'; box.appendChild(t); }
+        t.textContent = text;
+        t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+    }
+
+    // canvas pixel size = what the screen can actually show (max 2x), so tanks stay crisp
+    function gfxApplyResolution() {
+        let s = 1;
+        if (GFX.hi) {
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = canvas.offsetWidth || CONFIG.CANVAS_W;
+            s = Math.max(1, Math.min(2, (cssW * dpr) / CONFIG.CANVAS_W));
+            s = Math.round(s * 4) / 4;
+        }
+        if (s !== GFX.scale || canvas.width !== Math.round(CONFIG.CANVAS_W * s)) {
+            GFX.scale = s;
+            canvas.width = Math.round(CONFIG.CANVAS_W * s);
+            canvas.height = Math.round(CONFIG.CANVAS_H * s);
+        }
+        document.body.classList.toggle('gfx-high', GFX.hi);
+        if (GFX.hi && GFX.builtScale !== GFX.scale) gfxBuildTextures();
+    }
+
+    function gfxBuildTextures() {
+        GFX.builtScale = GFX.scale;
+        GFX.grain = null; GFX.mottle = null;
+        try {
+            const S = GFX.scale, T = Math.round(256 * S);
+            const tile = document.createElement('canvas');
+            tile.width = T; tile.height = T;
+            const tc = tile.getContext('2d');
+            const img = tc.createImageData(T, T);
+            if (img && img.data) {
+                const d = img.data;
+                for (let i = 0; i < d.length; i += 4) {
+                    const v = Math.random() < 0.5 ? 0 : 255;
+                    d[i] = d[i + 1] = d[i + 2] = v;
+                    d[i + 3] = Math.random() * (v ? 12 : 20);
+                }
+                tc.putImageData(img, 0, 0);
+            }
+            // fine blades / cracks (neutral black + white so it suits every map theme); wrapped so the tile repeats cleanly
+            tc.lineCap = 'round';
+            const blades = Math.round(520 * S * S / 2);
+            for (let i = 0; i < blades; i++) {
+                const x = Math.random() * T, y = Math.random() * T;
+                const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.1;
+                const len = (3 + Math.random() * 6) * S;
+                const dark = Math.random() < 0.6;
+                tc.strokeStyle = dark ? 'rgba(0,0,0,0.22)' : 'rgba(255,255,235,0.14)';
+                tc.lineWidth = Math.max(1, S * 0.9);
+                for (const ox of [-T, 0, T]) for (const oy of [-T, 0, T]) {
+                    const bx = x + ox, by = y + oy;
+                    if (bx < -12 || bx > T + 12 || by < -12 || by > T + 12) continue;
+                    tc.beginPath();
+                    tc.moveTo(bx, by);
+                    tc.lineTo(bx + Math.cos(a) * len, by + Math.sin(a) * len);
+                    tc.stroke();
+                }
+            }
+            const pat = ctx.createPattern(tile, 'repeat');
+            if (pat && pat.setTransform && window.DOMMatrix) pat.setTransform(new DOMMatrix().scale(1 / S));
+            GFX.grain = pat || null;
+
+            const mw = Math.round(CONFIG.CANVAS_W * Math.min(S, 1.5)), mh = Math.round(CONFIG.CANVAS_H * Math.min(S, 1.5));
+            const mo = document.createElement('canvas');
+            mo.width = mw; mo.height = mh;
+            const mc = mo.getContext('2d');
+            const k = mw / CONFIG.CANVAS_W;
+            for (let i = 0; i < 140; i++) {
+                const x = Math.random() * mw, y = Math.random() * mh;
+                const r = (40 + Math.random() * 120) * k;
+                const dark = Math.random() < 0.55;
+                const g = mc.createRadialGradient(x, y, 0, x, y, r);
+                g.addColorStop(0, dark ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,230,0.035)');
+                g.addColorStop(1, 'rgba(0,0,0,0)');
+                mc.fillStyle = g;
+                mc.fillRect(x - r, y - r, r * 2, r * 2);
+            }
+            GFX.mottle = mo;
+        } catch (e) { GFX.grain = null; GFX.mottle = null; }
+    }
+
+    function gfxInit() {
+        gfxLoadPrefs();
+        gfxApplyResolution();
+        const gb = byId('gfxBtn'), zb = byId('zoomBtn');
+        if (gb) gb.addEventListener('click', () => {
+            GFX.hi = !GFX.hi; GFX.auto = true;      // a manual choice switches the auto-downgrade off
+            gfxSavePrefs(); gfxApplyResolution();
+            gfxToast('Graphics: ' + (GFX.hi ? 'HIGH ✨' : 'NORMAL'));
+        });
+        if (zb) zb.addEventListener('click', () => {
+            const i = GFX.zooms.indexOf(GFX.zoom);
+            GFX.zoom = GFX.zooms[(i + 1) % GFX.zooms.length];
+            gfxSavePrefs();
+            gfxToast('Zoom: ' + (GFX.zoom === 1 ? 'full arena' : GFX.zoom + 'x'));
+        });
+        let rt = null;
+        window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(gfxApplyResolution, 200); });
+        window.addEventListener('orientationchange', () => { clearTimeout(rt); rt = setTimeout(gfxApplyResolution, 350); });
+    }
+
+    // ---- camera ----
+    function gfxCameraTarget() {
+        if (!ONLINE.active || ONLINE.lobby) return null;
+        return players[ONLINE.role === 'host' ? 0 : ONLINE.mySlot] || null;
+    }
+    function gfxCamera() {
+        const me = gfxCameraTarget();
+        const z = GFX.zoom;
+        if (!me || z <= 1) { GFX.camReady = false; GFX.camX = 0; GFX.camY = 0; return; }
+        const W = CONFIG.CANVAS_W, H = CONFIG.CANVAS_H, vw = W / z, vh = H / z;
+        const cx = me.x + CONFIG.TANK_SIZE / 2 + Math.cos(me.turretAngle) * 45;
+        const cy = me.y + CONFIG.TANK_SIZE / 2 + Math.sin(me.turretAngle) * 45;
+        const tx = Math.max(0, Math.min(W - vw, cx - vw / 2));
+        const ty = Math.max(0, Math.min(H - vh, cy - vh / 2));
+        if (!GFX.camReady) { GFX.camX = tx; GFX.camY = ty; GFX.camReady = true; }
+        else { GFX.camX += (tx - GFX.camX) * 0.16; GFX.camY += (ty - GFX.camY) * 0.16; }
+        ctx.scale(z, z);
+        ctx.translate(-GFX.camX, -GFX.camY);
+    }
+
+    // arrows at the screen edge for enemies you can't see
+    function gfxEdgeArrows() {
+        const me = gfxCameraTarget();
+        const z = GFX.zoom;
+        if (!me || z <= 1) return;
+        const W = CONFIG.CANVAS_W, H = CONFIG.CANVAS_H, inset = 26;
+        for (const p of players) {
+            if (p === me || !p.alive) continue;
+            const sx = (p.x + CONFIG.TANK_SIZE / 2 - GFX.camX) * z;
+            const sy = (p.y + CONFIG.TANK_SIZE / 2 - GFX.camY) * z;
+            if (sx > 12 && sx < W - 12 && sy > 12 && sy < H - 12) continue;
+            const ang = Math.atan2(sy - H / 2, sx - W / 2);
+            const hx = W / 2 - inset, hy = H / 2 - inset;
+            const k = Math.min(Math.abs(Math.cos(ang)) > 0.0001 ? hx / Math.abs(Math.cos(ang)) : 1e9,
+                               Math.abs(Math.sin(ang)) > 0.0001 ? hy / Math.abs(Math.sin(ang)) : 1e9);
+            const ax = W / 2 + Math.cos(ang) * k, ay = H / 2 + Math.sin(ang) * k;
+            const same = teamModeEnabled && p.team === me.team;
+            ctx.save();
+            ctx.translate(ax, ay);
+            ctx.globalAlpha = same ? 0.55 : 0.9;
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.beginPath(); ctx.arc(0, 0, 15, 0, Math.PI * 2); ctx.fill();
+            ctx.rotate(ang);
+            ctx.fillStyle = p.color;
+            ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-6, -8); ctx.lineTo(-3, 0); ctx.lineTo(-6, 8); ctx.closePath(); ctx.fill();
+            ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    // ---- HIGH quality effects ----
+    function gfxAdd(on) { ctx.globalCompositeOperation = (on && GFX.hi) ? 'lighter' : 'source-over'; }
+
+    function gfxGroundDetail() {
+        if (!GFX.hi) return;
+        if (GFX.mottle) ctx.drawImage(GFX.mottle, 0, 0, CONFIG.CANVAS_W, CONFIG.CANVAS_H);
+        if (GFX.grain) { ctx.fillStyle = GFX.grain; ctx.fillRect(0, 0, CONFIG.CANVAS_W, CONFIG.CANVAS_H); }
+    }
+
+    const _rgbCache = {};
+    function gfxRgb(hex) {
+        if (_rgbCache[hex]) return _rgbCache[hex];
+        let r = 255, g = 255, b = 255;
+        const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+        if (m) { const n = parseInt(m[1], 16); r = n >> 16; g = (n >> 8) & 255; b = n & 255; }
+        return (_rgbCache[hex] = r + ',' + g + ',' + b);
+    }
+
+    function gfxTankLights() {
+        if (!GFX.hi) return;
+        const S = CONFIG.TANK_SIZE;
+        for (const p of players) {
+            if (!p.alive) continue;
+            const cx = p.x + S / 2, cy = p.y + S / 2;
+            ctx.save();
+            ctx.translate(cx + 5, cy + 7);
+            ctx.rotate(p.bodyAngle || 0);
+            ctx.fillStyle = 'rgba(0,0,0,0.10)';
+            ctx.fillRect(-S / 2 - 5, -S / 2 - 3, S + 10, S + 6);
+            ctx.fillRect(-S / 2 - 2, -S / 2 - 1, S + 4, S + 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.16)';
+            ctx.fillRect(-S / 2, -S / 2, S, S);
+            ctx.restore();
+        }
+        ctx.globalCompositeOperation = 'lighter';
+        for (const p of players) {
+            if (!p.alive) continue;
+            const cx = p.x + S / 2, cy = p.y + S / 2, rgb = gfxRgb(p.color);
+            const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, S * 1.7);
+            g.addColorStop(0, `rgba(${rgb},0.20)`);
+            g.addColorStop(1, `rgba(${rgb},0)`);
+            ctx.fillStyle = g;
+            ctx.fillRect(cx - S * 1.7, cy - S * 1.7, S * 3.4, S * 3.4);
+        }
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
+    function gfxPostWorld() {
+        if (!GFX.hi) return;
+        const W = CONFIG.CANVAS_W, H = CONFIG.CANVAS_H;
+        const g = ctx.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, 'rgba(255,238,190,0.14)');
+        g.addColorStop(0.5, 'rgba(255,255,255,0)');
+        g.addColorStop(1, 'rgba(0,12,40,0.22)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.globalCompositeOperation = 'lighter';
+        const t = frameCount;
+        for (let i = 0; i < 28; i++) {
+            const sp = 0.12 + (i % 5) * 0.06;
+            const x = ((i * 97.3 + t * sp) % (W + 40)) - 20;
+            const y = ((i * 61.7 + Math.sin(t * 0.012 + i) * 24 + (i % 7) * 95) % (H + 40)) - 20;
+            ctx.globalAlpha = 0.10 + 0.14 * (0.5 + 0.5 * Math.sin(t * 0.03 + i * 1.7));
+            ctx.fillStyle = '#fff6d8';
+            ctx.beginPath(); ctx.arc(x, y, 1 + (i % 3) * 0.6, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // if the phone can't keep up, quietly fall back to normal graphics (once)
+    function gfxFpsWatch() {
+        const now = performance.now();
+        const dt = now - GFX.lastT;
+        GFX.lastT = now;
+        if (!GFX.hi || GFX.auto || dt > 250 || dt <= 0) return;
+        GFX.dt.push(dt);
+        if (GFX.dt.length >= 150) {
+            const avg = GFX.dt.reduce((a, b) => a + b, 0) / GFX.dt.length;
+            GFX.dt = [];
+            if (avg > 34) {
+                GFX.hi = false; GFX.auto = true;
+                gfxApplyResolution();
+                gfxToast('Phone is slow - switched to NORMAL graphics (tap ✨ to change)');
+            }
+        }
+    }
 
     // ============================================================
     //  BOOT
@@ -6352,6 +6860,7 @@
     window.addEventListener('pagehide', saveGameState);
     window.addEventListener('beforeunload', saveGameState);
 
+    gfxInit();
     gameLoop();
 
     // invite links look like  tank_battle.html?room=ABCDE
