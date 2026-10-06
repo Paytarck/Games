@@ -5814,7 +5814,7 @@
                 hits: p.hits, alive: p.alive, reload: p.reload, shield: p.shield,
                 missilePower: p.missilePower, hasPowerup: p.hasPowerup, respawnTimer: p.respawnTimer,
                 capturedFlags: p.capturedFlags, beingAbducted: p.beingAbducted,
-                abductTimer: p.abductTimer, aimLock: p.aimLock, stuckTimer: p.stuckTimer,
+                abductTimer: p.abductTimer, aimLock: p.aimLock, stuckTimer: p.stuckTimer, iq: (ONLINE.inputs[p.index] && ONLINE.inputs[p.index].q) || 0,
                 fs: ONLINE.lastFire[p.index] || 0,
             })),
             b: bullets,
@@ -5900,6 +5900,7 @@
         ONLINE.aimInit = false;
         ONLINE.hudSig = ''; ONLINE.timeSig = ''; ONLINE.modalKey = '';
         ONLINE.pendingState = null;
+        ONLINE.hist = []; ONLINE.corrX = ONLINE.corrY = 0; ONLINE.sendT = {};
 
         currentMapIndex = w.map;
         currentMap = MAPS[w.map] || MAPS[0];
@@ -5989,6 +5990,16 @@
             if (i !== ONLINE.mySlot) p.aimLock = d.aimLock || 0;
         });
         const me = players[ONLINE.mySlot];
+        const mineS = (s.p || [])[ONLINE.mySlot];
+        if (mineS && mineS.iq && ONLINE.sendT) {
+            const t0 = ONLINE.sendT[mineS.iq];
+            if (t0 !== undefined) {
+                const sample = Math.max(20, Math.min(1500, performance.now() - t0));
+                ONLINE.rtt = ONLINE.rtt ? ONLINE.rtt * 0.8 + sample * 0.2 : sample;
+            }
+            for (const k in ONLINE.sendT) if (+k <= mineS.iq) delete ONLINE.sendT[k];
+        }
+        if (me && me.tx !== undefined) guestReconcile(me);
         if (me && !ONLINE.aimInit) { ONLINE.localAim = me.tt !== undefined ? me.tt : me.turretAngle; ONLINE.aimInit = true; }
 
         // ping = time between pressing fire and the host confirming it
@@ -6125,23 +6136,24 @@
         const len = Math.hypot(mx, my);
         if (len > 1) { mx /= len; my /= len; }
         ONLINE.lastMove = { x: mx, y: my };
+        ONLINE.inSeq = (ONLINE.inSeq || 0) + 1;
         while (ONLINE.localAim > Math.PI) ONLINE.localAim -= Math.PI * 2;
         while (ONLINE.localAim < -Math.PI) ONLINE.localAim += Math.PI * 2;
         me.turretAngle = ONLINE.localAim;          // your own gun reacts instantly
         me.aimLock = ONLINE.aimLock;
-        return { x: r2(mx), y: r2(my), a: Math.round(ONLINE.localAim * 1000) / 1000, f: ONLINE.fireSeq };
+        return { x: r2(mx), y: r2(my), a: Math.round(ONLINE.localAim * 1000) / 1000, f: ONLINE.fireSeq, q: ONLINE.inSeq };
     }
 
-    // CLIENT-SIDE PREDICTION: my own tank moves the instant I press a key (same rules as the host),
-    // then is nudged toward the host's authoritative position so we never drift apart.
+    // CLIENT-SIDE PREDICTION + RECONCILIATION
+    // My tank moves the instant I press a key (same rules as the host). Every host snapshot is ~1 round-trip OLD,
+    // so it is compared with where my tank WAS one round-trip ago (history), and any real difference is blended in smoothly.
     function guestPredictMe(p) {
-        if (!gameActive || gamePaused || !p.alive || p.beingAbducted || p.stuckTimer > 0) { ONLINE.stillFrames = 0; return false; }
+        if (!gameActive || gamePaused || !p.alive || p.beingAbducted || p.stuckTimer > 0) {
+            ONLINE.hist = []; ONLINE.corrX = ONLINE.corrY = 0;
+            return false;
+        }
         const mv = ONLINE.lastMove || { x: 0, y: 0 };
-        const ex = p.tx - p.x, ey = p.ty - p.y;
-        if (Math.abs(ex) + Math.abs(ey) > 100) { p.x = p.tx; p.y = p.ty; return true; }      // respawn / teleport / big mismatch
-
         if (mv.x || mv.y) {
-            ONLINE.stillFrames = 0;
             const len = Math.hypot(mv.x, mv.y), ux = mv.x / len, uy = mv.y / len;
 
             let diff = Math.atan2(uy, ux) - p.bodyAngle;
@@ -6159,20 +6171,39 @@
             const oy = p.y;
             p.y = Math.max(0, Math.min(CONFIG.CANVAS_H - S, p.y + uy * CONFIG.TANK_SPEED * mult));
             if (tankCollides(p, me)) p.y = oy;
-
-            // the host is always a little BEHIND me along my direction of travel (that's just network delay) -> ignore that part;
-            // fix sideways drift and the case where the host is ahead of me
-            const along = ex * ux + ey * uy;
-            const px = ex - along * ux, py = ey - along * uy;
-            p.x += px * 0.12; p.y += py * 0.12;
-            if (along > 0) { p.x += along * ux * 0.12; p.y += along * uy * 0.12; }
-            else if (along < -55) { p.x += (along + 55) * ux * 0.1; p.y += (along + 55) * uy * 0.1; }
         } else {
-            ONLINE.stillFrames = (ONLINE.stillFrames || 0) + 1;
-            if (ONLINE.stillFrames > 18) { p.x += ex * 0.2; p.y += ey * 0.2; }                 // settled -> agree with the host
             p.bodyAngle = lerpAngle(p.bodyAngle, p.tb, 0.35);
         }
+
+        // blend the pending correction in a little each frame (never a jump)
+        if (ONLINE.corrX || ONLINE.corrY) {
+            const cx = ONLINE.corrX * 0.2, cy = ONLINE.corrY * 0.2;
+            p.x += cx; p.y += cy;
+            ONLINE.corrX -= cx; ONLINE.corrY -= cy;
+            if (Math.abs(ONLINE.corrX) + Math.abs(ONLINE.corrY) < 0.15) ONLINE.corrX = ONLINE.corrY = 0;
+        }
+
+        const h = ONLINE.hist || (ONLINE.hist = []);
+        h.push({ t: performance.now(), x: p.x, y: p.y });
+        if (h.length > 180) h.shift();
         return true;
+    }
+
+    // called for every new host snapshot: where SHOULD my tank have been one round-trip ago?
+    function guestReconcile(p) {
+        const h = ONLINE.hist;
+        if (!ONLINE.rtt || !h || !h.length || !gameActive || gamePaused || !p.alive || p.beingAbducted) return;
+        const tq = performance.now() - ONLINE.rtt;
+        let ref = h[0];
+        for (let i = h.length - 1; i >= 0; i--) { if (h[i].t <= tq) { ref = h[i]; break; } }
+        const ex = p.tx - ref.x, ey = p.ty - ref.y, d = Math.hypot(ex, ey);
+        if (d > 90) {                                           // respawn / teleport / real mismatch -> snap
+            p.x += ex; p.y += ey; ONLINE.corrX = ONLINE.corrY = 0; ONLINE.hist = [];
+        } else if (d < 3) {                                     // same place (within rounding) -> nothing to fix
+            ONLINE.corrX = ONLINE.corrY = 0;
+        } else {                                                // small real difference -> fix it gently
+            ONLINE.corrX = ex * 0.6; ONLINE.corrY = ey * 0.6;
+        }
     }
 
     function guestSendInput(force) {
@@ -6183,6 +6214,7 @@
         if (force || (key !== ONLINE.lastInputKey && since >= 20) || since > 1000) {
             ONLINE.lastInputKey = key;
             ONLINE.lastInputT = now;
+            (ONLINE.sendT || (ONLINE.sendT = {}))[inp.q] = now;
             TankNet.sendInput(inp);
         }
     }
@@ -6461,6 +6493,7 @@
         ONLINE.names = []; ONLINE.slotUids = []; ONLINE.playersMap = {}; ONLINE.left = {};
         ONLINE.inputs = {}; ONLINE.lastFire = {}; ONLINE.events = []; ONLINE.pendingState = null;
         ONLINE.fireSeq = 0; ONLINE.aimInit = false; ONLINE.aimLock = 0;
+        ONLINE.rtt = 0; ONLINE.hist = []; ONLINE.corrX = ONLINE.corrY = 0; ONLINE.sendT = {}; ONLINE.inSeq = 0; ONLINE.lastMove = null;
         document.body.classList.add('online-active', 'online-' + role);
         buildTouchControls();                      // online = one control set (yours)
         byId('changePlayersBtn').textContent = 'LEAVE ROOM';
