@@ -1722,8 +1722,8 @@
 
         if (e.code === 'KeyT' && !e.repeat && !mobileMode && !players.some(pl => pl.keys && Object.values(pl.keys).includes('KeyT'))) {
             EASY.autoAim = !EASY.autoAim;
-            try { localStorage.setItem('tankBattleAutoAim', EASY.autoAim ? '1' : '0'); } catch (err) {}
-            gfxToast(EASY.autoAim ? 'Auto-aim: ON 🎯' : 'Auto-aim: OFF (use mouse or rotate keys)');
+            try { localStorage.setItem('tankBattleAutoAim2', EASY.autoAim ? '1' : '0'); } catch (err) {}
+            gfxToast(EASY.autoAim ? 'Auto-aim: ON 🎯 (press T to turn off)' : 'Manual aim ✋ mouse = aim, click / Space = fire');
         }
 
         if (gamePaused) return;
@@ -1759,13 +1759,13 @@
     //  EASY CONTROLS  (auto-aim, mouse aim, click / Space to fire)
     // ============================================================
     const EASY = {
-        autoAim: true,                       // keyboard players: gun follows the nearest enemy by itself
+        autoAim: false,                      // laptop: OFF by default (mouse aims). Press T to turn auto-aim on
         mouseInside: false, mx: 0, my: 0,    // mouse position over the arena
         mouseDown: false,
         manual: [0, 0, 0, 0],                // frames the gun stays "hand-controlled" after Q/E style keys
         hold: [false, false, false, false],  // phone: fire pad held down
     };
-    try { EASY.autoAim = localStorage.getItem('tankBattleAutoAim') !== '0'; } catch (e) {}
+    try { EASY.autoAim = localStorage.getItem('tankBattleAutoAim2') === '1'; } catch (e) {}   // new key: everybody starts with manual aim
 
     function easyMySlot() {
         if (!ONLINE.active) return 0;
@@ -6124,6 +6124,7 @@
         }
         const len = Math.hypot(mx, my);
         if (len > 1) { mx /= len; my /= len; }
+        ONLINE.lastMove = { x: mx, y: my };
         while (ONLINE.localAim > Math.PI) ONLINE.localAim -= Math.PI * 2;
         while (ONLINE.localAim < -Math.PI) ONLINE.localAim += Math.PI * 2;
         me.turretAngle = ONLINE.localAim;          // your own gun reacts instantly
@@ -6131,12 +6132,55 @@
         return { x: r2(mx), y: r2(my), a: Math.round(ONLINE.localAim * 1000) / 1000, f: ONLINE.fireSeq };
     }
 
+    // CLIENT-SIDE PREDICTION: my own tank moves the instant I press a key (same rules as the host),
+    // then is nudged toward the host's authoritative position so we never drift apart.
+    function guestPredictMe(p) {
+        if (!gameActive || gamePaused || !p.alive || p.beingAbducted || p.stuckTimer > 0) { ONLINE.stillFrames = 0; return false; }
+        const mv = ONLINE.lastMove || { x: 0, y: 0 };
+        const ex = p.tx - p.x, ey = p.ty - p.y;
+        if (Math.abs(ex) + Math.abs(ey) > 100) { p.x = p.tx; p.y = p.ty; return true; }      // respawn / teleport / big mismatch
+
+        if (mv.x || mv.y) {
+            ONLINE.stillFrames = 0;
+            const len = Math.hypot(mv.x, mv.y), ux = mv.x / len, uy = mv.y / len;
+
+            let diff = Math.atan2(uy, ux) - p.bodyAngle;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            p.bodyAngle += diff * 0.15;
+
+            let mult = suddenDeathActive ? CONFIG.SUDDEN_DEATH_SPEED_FACTOR : 1;
+            if (!tankInAnySafeBase(p) && tankInMud(p)) mult = CONFIG.MUD_SLOW_FACTOR * (suddenDeathActive ? CONFIG.SUDDEN_DEATH_SPEED_FACTOR : 1);
+
+            const me = ONLINE.mySlot, S = CONFIG.TANK_SIZE;
+            const ox = p.x;
+            p.x = Math.max(0, Math.min(CONFIG.CANVAS_W - S, p.x + ux * CONFIG.TANK_SPEED * mult));
+            if (tankCollides(p, me)) p.x = ox;
+            const oy = p.y;
+            p.y = Math.max(0, Math.min(CONFIG.CANVAS_H - S, p.y + uy * CONFIG.TANK_SPEED * mult));
+            if (tankCollides(p, me)) p.y = oy;
+
+            // the host is always a little BEHIND me along my direction of travel (that's just network delay) -> ignore that part;
+            // fix sideways drift and the case where the host is ahead of me
+            const along = ex * ux + ey * uy;
+            const px = ex - along * ux, py = ey - along * uy;
+            p.x += px * 0.12; p.y += py * 0.12;
+            if (along > 0) { p.x += along * ux * 0.12; p.y += along * uy * 0.12; }
+            else if (along < -55) { p.x += (along + 55) * ux * 0.1; p.y += (along + 55) * uy * 0.1; }
+        } else {
+            ONLINE.stillFrames = (ONLINE.stillFrames || 0) + 1;
+            if (ONLINE.stillFrames > 18) { p.x += ex * 0.2; p.y += ey * 0.2; }                 // settled -> agree with the host
+            p.bodyAngle = lerpAngle(p.bodyAngle, p.tb, 0.35);
+        }
+        return true;
+    }
+
     function guestSendInput(force) {
         const inp = guestComputeInput();
         const key = inp.x + ',' + inp.y + ',' + inp.a + ',' + inp.f;
         const now = performance.now();
         const since = now - ONLINE.lastInputT;
-        if (force || (key !== ONLINE.lastInputKey && since >= 30) || since > 1000) {
+        if (force || (key !== ONLINE.lastInputKey && since >= 20) || since > 1000) {
             ONLINE.lastInputKey = key;
             ONLINE.lastInputT = now;
             TankNet.sendInput(inp);
@@ -6155,6 +6199,7 @@
         // smooth the 20 Hz snapshots into 60 fps motion
         for (const p of players) {
             if (p.tx === undefined) continue;
+            if (p.index === ONLINE.mySlot && guestPredictMe(p)) continue;      // my tank = predicted, no waiting for the host
             const dx = p.tx - p.x, dy = p.ty - p.y;
             if (Math.abs(dx) + Math.abs(dy) > 140) { p.x = p.tx; p.y = p.ty; }
             else { p.x += dx * 0.35; p.y += dy * 0.35; }
