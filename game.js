@@ -1744,6 +1744,22 @@
         }
     }, true);
 
+    // A key-up is lost whenever the window loses focus (Win key, Alt+Tab, notification, click outside...).
+    // Without this the tank would keep driving by itself.
+    function releaseAllKeys() {
+        keysPressed = {};
+        EASY.mouseDown = false;
+        EASY.hold = [false, false, false, false];
+    }
+    window.addEventListener('blur', releaseAllKeys);
+    window.addEventListener('pagehide', releaseAllKeys);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllKeys(); });
+    window.addEventListener('contextmenu', releaseAllKeys);
+    window.addEventListener('keydown', (e) => {
+        // Windows / Cmd / Alt shortcuts swallow the key-ups of everything that is held
+        if (e.code === 'MetaLeft' || e.code === 'MetaRight' || e.code === 'AltLeft' || e.code === 'AltRight' || e.key === 'Meta' || e.key === 'ContextMenu') releaseAllKeys();
+    }, true);
+
     window.addEventListener('keyup', (e) => {
         keysPressed[e.code] = false;
         const blockedKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Slash', 'Comma', 'Period'];
@@ -3072,8 +3088,9 @@
             if (isRemoteSlot(i)) {
                 const inp = ONLINE.inputs[i];
                 if (inp) {
-                    moveX = +inp.x || 0;
-                    moveY = +inp.y || 0;
+                    const stale = performance.now() - ((ONLINE.inputT && ONLINE.inputT[i]) || 0) > 2500;   // friend sends at least once a second
+                    moveX = stale ? 0 : (+inp.x || 0);
+                    moveY = stale ? 0 : (+inp.y || 0);
                     if (typeof inp.a === 'number' && isFinite(inp.a)) p.turretAngle = inp.a;
                     if (ONLINE.lastFire[i] === undefined) ONLINE.lastFire[i] = inp.f;
                     else if (inp.f !== ONLINE.lastFire[i]) {
@@ -6491,7 +6508,7 @@
         ONLINE.savedColors = playerConfigs.map(c => c.colorIndex);
         ONLINE.mySlot = 0; ONLINE.count = 0; ONLINE.round = 0; ONLINE.worldRound = -1;
         ONLINE.names = []; ONLINE.slotUids = []; ONLINE.playersMap = {}; ONLINE.left = {};
-        ONLINE.inputs = {}; ONLINE.lastFire = {}; ONLINE.events = []; ONLINE.pendingState = null;
+        ONLINE.inputs = {}; ONLINE.inputT = {}; ONLINE.lastFire = {}; ONLINE.events = []; ONLINE.pendingState = null;
         ONLINE.fireSeq = 0; ONLINE.aimInit = false; ONLINE.aimLock = 0;
         ONLINE.rtt = 0; ONLINE.hist = []; ONLINE.corrX = ONLINE.corrY = 0; ONLINE.sendT = {}; ONLINE.inSeq = 0; ONLINE.lastMove = null;
         document.body.classList.add('online-active', 'online-' + role);
@@ -6502,7 +6519,7 @@
         if (role === 'host') {
             TankNet.onInput((uid, val) => {
                 const slot = ONLINE.slotUids.indexOf(uid);
-                if (slot > 0 && val) ONLINE.inputs[slot] = val;
+                if (slot > 0 && val) { ONLINE.inputs[slot] = val; (ONLINE.inputT || (ONLINE.inputT = {}))[slot] = performance.now(); }
             });
         } else {
             TankNet.onRoomGone(() => { if (ONLINE.active) leaveOnline('The host closed the room.'); });
