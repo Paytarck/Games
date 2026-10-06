@@ -5544,19 +5544,33 @@
     // ============================================================
     //  GAME LOOP
     // ============================================================
-    let _lastFrameT = 0;
+    // FIXED TIMESTEP: the game logic always advances exactly 60 times per second, on any screen
+    // (60 / 75 / 90 / 120 / 144 Hz). Host and guests therefore simulate at the SAME speed.
+    const LOGIC_STEP_MS = 1000 / 60;
+    let _lastFrameT = 0, _acc = 0;
     function gameLoop(ts) {
-        // cap at ~60 updates/second: 90/120Hz phones used to run the game (and the GPU) twice as hard
-        if (ts && ts - _lastFrameT < 15.5) { requestAnimationFrame(gameLoop); return; }
-        _lastFrameT = ts || 0;
-        easyHoldFire();
-        if (isOnlineGuest()) guestFrame();
-        else {
-            update();
-            if (ONLINE.active && ONLINE.role === 'host') hostNetTick();
-        }
-        draw();
         requestAnimationFrame(gameLoop);
+        if (!ts) ts = performance.now();
+        if (!_lastFrameT) { _lastFrameT = ts; return; }
+        let dt = ts - _lastFrameT;
+        _lastFrameT = ts;
+        if (dt > 250 || dt < 0) dt = LOGIC_STEP_MS;                       // tab was hidden / clock hiccup
+        if (Math.abs(dt - LOGIC_STEP_MS) < 1.5) dt = LOGIC_STEP_MS;       // 60 Hz vsync jitter -> exactly one step
+        _acc += dt;
+        if (_acc > LOGIC_STEP_MS * 4) _acc = LOGIC_STEP_MS * 4;           // never try to catch up more than 4 steps
+
+        let steps = 0;
+        while (_acc >= LOGIC_STEP_MS - 0.001 && steps < 4) {
+            _acc -= LOGIC_STEP_MS;
+            steps++;
+            easyHoldFire();
+            if (isOnlineGuest()) guestFrame();
+            else {
+                update();
+                if (ONLINE.active && ONLINE.role === 'host') hostNetTick();
+            }
+        }
+        if (steps > 0) draw();                                            // nothing changed -> no need to redraw
     }
 
     // ============================================================
@@ -6190,7 +6204,14 @@
             if (tankCollides(p, me)) p.y = oy;
         } else {
             p.bodyAngle = lerpAngle(p.bodyAngle, p.tb, 0.35);
+            ONLINE.stillFrames = (ONLINE.stillFrames || 0) + 1;
+            if (ONLINE.stillFrames * 16.7 > (ONLINE.rtt || 200) + 200) {          // host has had time to stop too -> agree with it
+                const ex = p.tx - p.x, ey = p.ty - p.y;
+                if (Math.abs(ex) + Math.abs(ey) < 0.4) { p.x = p.tx; p.y = p.ty; }
+                else { p.x += ex * 0.2; p.y += ey * 0.2; }
+            }
         }
+        if (mv.x || mv.y) ONLINE.stillFrames = 0;
 
         // blend the pending correction in a little each frame (never a jump)
         if (ONLINE.corrX || ONLINE.corrY) {
@@ -6216,10 +6237,11 @@
         const ex = p.tx - ref.x, ey = p.ty - ref.y, d = Math.hypot(ex, ey);
         if (d > 90) {                                           // respawn / teleport / real mismatch -> snap
             p.x += ex; p.y += ey; ONLINE.corrX = ONLINE.corrY = 0; ONLINE.hist = [];
-        } else if (d < 3) {                                     // same place (within rounding) -> nothing to fix
+        } else if (d < 14) {                                    // within the margin of the delay estimate -> leave my tank alone
             ONLINE.corrX = ONLINE.corrY = 0;
-        } else {                                                // small real difference -> fix it gently
-            ONLINE.corrX = ex * 0.6; ONLINE.corrY = ey * 0.6;
+        } else {                                                // real difference -> fix only the part beyond the margin, gently
+            const k = (1 - 14 / d) * 0.5;
+            ONLINE.corrX = ex * k; ONLINE.corrY = ey * k;
         }
     }
 
