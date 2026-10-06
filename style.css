@@ -2562,3 +2562,75 @@ body.rotate-view .gfx-toast { transform: translateX(-50%); }
 
 /* only the host can start the game */
 body.online-guest #onlineStartBtn { display: none !important; }
+
+/* ============================================================
+   MOBILE PERFORMANCE — no blur/animation work on top of the canvas
+   ============================================================ */
+body.mobile-mode *,
+body.mobile-mode *::before,
+body.mobile-mode *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+body.mobile-mode .logo-icon,
+body.mobile-mode .hud-player,
+body.mobile-mode .hud-heart { filter: none; box-shadow: none; }
+body.mobile-mode .game-wrapper { animation: none; }
+body.mobile-mode .canvas-container {
+    background: #0b1008;
+    contain: layout paint size;
+}
+body.mobile-mode #gameCanvas {
+    cursor: default;
+    will-change: transform;
+    image-rendering: auto;
+}
+body.mobile-mode .modal-overlay { background: rgba(0, 0, 0, 0.92); }
+
+
+/* ============================================================
+   FLOATING TOUCH CONTROLS (one tank per phone / online)
+   left half  = move: stick appears under your thumb
+   right half = aim + fire: tap = auto-aim shot, hold = keep firing, drag = aim by hand
+   ============================================================ */
+.tc-zone { display: none; }
+body.mobile-mode .tc-zone {
+    display: block;
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 50%;
+    pointer-events: auto;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+body.mobile-mode .tc-zone-move { left: 0; }
+body.mobile-mode .tc-zone-aim  { right: 0; }
+body.rotate-view .tc-zone { top: 35%; }          /* portrait: thumbs live in the lower part */
+body.layout-edit .tc-zone { display: none !important; }
+
+.tc-ring {
+    display: none;
+    position: absolute;
+    width: var(--js-size, 110px);
+    height: var(--js-size, 110px);
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 3px solid var(--pcl, #fff);
+    background: radial-gradient(circle, rgba(0,0,0,.15), rgba(0,0,0,.45));
+    pointer-events: none;
+}
+.tc-zone.active .tc-ring { display: block; }
+.tc-zone .tc-knob { transition: none; }
+.tc-ring-aim .tc-knob { display: flex; align-items: center; justify-content: center; font-size: calc(var(--js-size, 110px) * 0.2); }
+
+/* the fixed pads stay as faint hints; the floating zone does the work */
+body.mobile-mode .tc-zone ~ .tc-group .tc-stick,
+body.mobile-mode .tc-zone ~ .tc-group .tc-fire { opacity: 0.45; }
+body.mobile-mode .tc-zone ~ .tc-group .tc-stick.active,
+body.mobile-mode .tc-zone ~ .tc-group .tc-fire.active { opacity: 1; }
+
+
+/* host-only: after a round, go back to the waiting room to change map / rules */
+.room-lobby-btn { display: none; }
+body.online-host .room-lobby-btn { display: inline-block; }
+body.online-guest .room-lobby-btn { display: none !important; }

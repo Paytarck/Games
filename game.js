@@ -1896,7 +1896,7 @@
         const base = rotateView
             ? Math.min(Math.min(Math.max(76, 0.27 * vh), 132), 0.25 * vw)
             : Math.min(Math.max(66, 0.21 * vh), 104);
-        return base * controlLayout.scale;
+        return base * controlLayout.scale * (ONLINE.active ? 1.12 : 1);
     }
 
     // Default spot of each control (as fractions of the screen) = the stacked layout
@@ -1974,7 +1974,7 @@
 
             const moveStick = (stick, e) => {
                 const i = parseInt(stick.dataset.player);
-                const r = stick.getBoundingClientRect();
+                const r = stick._org || stick.getBoundingClientRect();     // _org = floating stick that appeared under the thumb
                 const maxR = r.width * 0.29;               // how far the knob can travel
                 let dx = e.clientX - (r.left + r.width / 2);
                 let dy = e.clientY - (r.top + r.height / 2);
@@ -1991,7 +1991,7 @@
             // ---- aim pad: drag = point the gun, release = fire ----
             const aimFromPointer = (pad, e) => {
                 const i = parseInt(pad.dataset.player);
-                const r = pad.getBoundingClientRect();
+                const r = pad._org || pad.getBoundingClientRect();
                 const maxR = r.width * 0.3;
                 let dx = e.clientX - (r.left + r.width / 2);
                 let dy = e.clientY - (r.top + r.height / 2);
@@ -2023,9 +2023,27 @@
                 if (layoutEditMode) return;
                 const stick = e.target.closest('.tc-stick');
                 const pad = e.target.closest('.tc-fire');
-                if (!stick && !pad) return;
+                const zone = (!stick && !pad) ? e.target.closest('.tc-zone') : null;
+                if (!stick && !pad && !zone) return;
                 e.preventDefault();
                 initAudio();
+                if (zone) {
+                    // FLOATING controls: the stick / aim pad appears wherever the thumb lands
+                    const zr = zone.getBoundingClientRect(), sz = getControlSize();
+                    zone._org = { left: e.clientX - sz / 2, top: e.clientY - sz / 2, width: sz };
+                    const ring = zone.querySelector('.tc-ring');
+                    if (ring) { ring.style.left = (e.clientX - zr.left) + 'px'; ring.style.top = (e.clientY - zr.top) + 'px'; }
+                    try { zone.setPointerCapture(e.pointerId); } catch (err) {}
+                    zone.classList.add('active');
+                    if (zone.dataset.zone === 'move') moveStick(zone, e);
+                    else {
+                        zone._down = true; zone._dragged = false;
+                        aimFromPointer(zone, e);
+                        const zi = parseInt(zone.dataset.player);
+                        if (mobileAimMode[zi] === 'auto' && !zone._dragged) { EASY.hold[zi] = true; mobileShoot(zi); }
+                    }
+                    return;
+                }
                 if (stick) {
                     try { stick.setPointerCapture(e.pointerId); } catch (err) {}
                     stick.classList.add('active');
@@ -2041,6 +2059,11 @@
             });
             box.addEventListener('pointermove', (e) => {
                 if (layoutEditMode) return;
+                const zn = e.target.closest('.tc-zone');
+                if (zn && zn.hasPointerCapture && zn.hasPointerCapture(e.pointerId)) {
+                    if (zn.dataset.zone === 'move') moveStick(zn, e); else if (zn._down) aimFromPointer(zn, e);
+                    return;
+                }
                 const stick = e.target.closest('.tc-stick');
                 if (stick && stick.hasPointerCapture && stick.hasPointerCapture(e.pointerId)) { moveStick(stick, e); return; }
                 const pad = e.target.closest('.tc-fire');
@@ -2048,6 +2071,13 @@
             });
             const onUp = (e) => {
                 if (layoutEditMode) return;
+                const zn = e.target.closest && e.target.closest('.tc-zone');
+                if (zn) {
+                    zn.classList.remove('active');
+                    if (zn.dataset.zone === 'move') releaseStick(zn); else releaseFire(zn, e.type === 'pointerup');
+                    zn._org = null;
+                    return;
+                }
                 const stick = e.target.closest && e.target.closest('.tc-stick');
                 const pad = e.target.closest && e.target.closest('.tc-fire');
                 if (stick) releaseStick(stick);
@@ -2108,6 +2138,14 @@
                 <div class="tc-stick" data-player="${i}"><div class="tc-knob"></div></div>
                 <div class="tc-fire" data-player="${i}" aria-label="Aim and fire"><div class="tc-knob">💥</div></div>
             </div>`;
+        }
+        if (nCtl === 1) {
+            const zp = players[ONLINE.active ? ONLINE.mySlot : 0];
+            if (zp) {
+                const zs = `style="--pc:${zp.color};--pcl:${zp.lightColor}"`;
+                html = `<div class="tc-zone tc-zone-move" data-zone="move" data-player="0" ${zs}><div class="tc-ring"><div class="tc-knob"></div></div></div>
+                        <div class="tc-zone tc-zone-aim" data-zone="aim" data-player="0" ${zs}><div class="tc-ring tc-ring-aim"><div class="tc-knob">💥</div></div></div>` + html;
+            }
         }
         box.innerHTML = html;
         applyControlLayout();
@@ -3440,6 +3478,7 @@
 
     // particles / explosions / splashes / tracks / screen-shake (shared by local play and online guests)
     function updateCosmetics() {
+        if (mobileMode && particles.length > 140) particles.splice(0, particles.length - 140);
         for (let i = particles.length - 1; i >= 0; i--) {
             const pt = particles[i];
             pt.x += pt.vx; pt.y += pt.vy;
@@ -5488,7 +5527,11 @@
     // ============================================================
     //  GAME LOOP
     // ============================================================
-    function gameLoop() {
+    let _lastFrameT = 0;
+    function gameLoop(ts) {
+        // cap at ~60 updates/second: 90/120Hz phones used to run the game (and the GPU) twice as hard
+        if (ts && ts - _lastFrameT < 15.5) { requestAnimationFrame(gameLoop); return; }
+        _lastFrameT = ts || 0;
         easyHoldFire();
         if (isOnlineGuest()) guestFrame();
         else {
@@ -6389,7 +6432,11 @@
             TankNet.onState((j) => { ONLINE.pendingState = j; });
         }
         ONLINE.rules = null;
-        if (role === 'guest') TankNet.onRules((r) => { ONLINE.rules = r; if (ONLINE.lobby) renderRules(); });
+        if (role === 'guest') {
+            TankNet.onRules((r) => { ONLINE.rules = r; if (ONLINE.lobby) renderRules(); });
+            // host pressed "MAP & RULES" -> everybody returns to the waiting room
+            TankNet.onStatus((st) => { if (st === 'lobby' && ONLINE.active && !ONLINE.lobby) backToLobby(); });
+        }
         byId('onlineRoomCode').textContent = code;
         showOnlineScreen('lobby');
         setOnlineMsg('');
@@ -6549,6 +6596,31 @@
         }
     }
 
+    // everybody (host + guests) returns to the waiting room; only the host can then change rules and start
+    function backToLobby() {
+        ONLINE.lobby = true;
+        ONLINE.pendingState = null;
+        ONLINE.modalKey = '';
+        gameActive = false; gamePaused = false;
+        touchStick = [null, null, null, null];
+        touchAim = [null, null, null, null];
+        winModal.classList.remove('active');
+        updatePauseOverlay();
+        updatePauseButton();
+        showOnlineScreen('lobby');
+        byId('onlineModal').classList.add('active');
+        renderColorSwatches();
+        renderLobby();
+        setOnlineMsg(ONLINE.role === 'host' ? 'Choose the map and rules, then press START.' : 'Waiting for the host to start the game...');
+    }
+
+    function hostBackToLobby() {
+        if (ONLINE.role !== 'host' || ONLINE.lobby) return;
+        TankNet.unlockRoom();
+        backToLobby();
+        publishRules();
+    }
+
     function startOnlineGame() {
         if (ONLINE.role !== 'host' || !ONLINE.lobby) return;
         const map = ONLINE.playersMap || {};
@@ -6679,6 +6751,7 @@
         byId('onlineCloseBtn').addEventListener('click', () => byId('onlineModal').classList.remove('active'));
         byId('onlineLeaveBtn').addEventListener('click', () => leaveOnline());
         byId('onlineStartBtn').addEventListener('click', () => { initAudio(); startOnlineGame(); });
+        byId('roomLobbyBtn').addEventListener('click', () => { playSound('click'); hostBackToLobby(); });
         byId('onlineCode').addEventListener('input', (e) => {
             e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
         });
@@ -6716,6 +6789,7 @@
         try {
             const q = localStorage.getItem(GFX_KEYS.Q);
             if (q === 'low') GFX.hi = false;
+            else if (q !== 'high' && mobileMode) GFX.hi = false;   // phones: smooth by default
             const z = parseFloat(localStorage.getItem(GFX_KEYS.Z));
             GFX.zoom = GFX.zooms.includes(z) ? z : (mobileMode ? 2 : 1);
         } catch (e) { GFX.zoom = mobileMode ? 2 : 1; }
@@ -6742,9 +6816,10 @@
         if (GFX.hi) {
             const dpr = window.devicePixelRatio || 1;
             const cssW = canvas.offsetWidth || CONFIG.CANVAS_W;
-            s = Math.max(1, Math.min(2, (cssW * dpr) / CONFIG.CANVAS_W));
+            s = Math.max(1, Math.min(mobileMode ? 1.25 : 2, (cssW * dpr) / CONFIG.CANVAS_W));
             s = Math.round(s * 4) / 4;
         }
+        gfxShadowSwitch(!(mobileMode && !GFX.hi));
         if (s !== GFX.scale || canvas.width !== Math.round(CONFIG.CANVAS_W * s)) {
             GFX.scale = s;
             canvas.width = Math.round(CONFIG.CANVAS_W * s);
@@ -6752,6 +6827,33 @@
         }
         document.body.classList.toggle('gfx-high', GFX.hi);
         if (GFX.hi && GFX.builtScale !== GFX.scale) gfxBuildTextures();
+    }
+
+    // shadowBlur is the #1 mobile GPU killer: in NORMAL mode on phones every glow/shadow is skipped
+    function gfxShadowSwitch(on) {
+        try {
+            if (on) { delete ctx.shadowBlur; }
+            else Object.defineProperty(ctx, 'shadowBlur', { configurable: true, get() { return 0; }, set() {} });
+        } catch (e) {}
+    }
+
+    // Phones: make the arena fill the screen (tiny stretch allowed instead of big black bars)
+    function fitMobileArena() {
+        const box = document.getElementById('canvasContainer');
+        if (!box || !canvas) return;
+        if (!mobileMode) { canvas.style.cssText = ''; return; }
+        const r = box.getBoundingClientRect();
+        const lw = rotateView ? r.height : r.width;     // size in the arena's own orientation
+        const lh = rotateView ? r.width : r.height;
+        if (lw < 50 || lh < 50) return;
+        const A = CONFIG.CANVAS_W / CONFIG.CANVAS_H, STRETCH = 1.22;
+        let w, h;
+        if (lw / lh > A) { h = lh; w = Math.min(lw, lh * A * STRETCH); }
+        else { w = lw; h = Math.min(lh, lw / A * STRETCH); }
+        canvas.style.maxWidth = 'none'; canvas.style.maxHeight = 'none';
+        canvas.style.objectFit = 'fill';
+        canvas.style.width = Math.floor(w) + 'px';
+        canvas.style.height = Math.floor(h) + 'px';
     }
 
     function gfxBuildTextures() {
@@ -6830,8 +6932,11 @@
             gfxToast('Zoom: ' + (GFX.zoom === 1 ? 'full arena' : GFX.zoom + 'x'));
         });
         let rt = null;
-        window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(gfxApplyResolution, 200); });
-        window.addEventListener('orientationchange', () => { clearTimeout(rt); rt = setTimeout(gfxApplyResolution, 350); });
+        const refit = () => { fitMobileArena(); gfxApplyResolution(); };
+        window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(refit, 200); });
+        window.addEventListener('orientationchange', () => { clearTimeout(rt); rt = setTimeout(refit, 350); });
+        fitMobileArena();
+        setTimeout(fitMobileArena, 300);
     }
 
     // ---- camera ----
@@ -6962,10 +7067,10 @@
         GFX.lastT = now;
         if (!GFX.hi || GFX.auto || dt > 250 || dt <= 0) return;
         GFX.dt.push(dt);
-        if (GFX.dt.length >= 150) {
+        if (GFX.dt.length >= 90) {
             const avg = GFX.dt.reduce((a, b) => a + b, 0) / GFX.dt.length;
             GFX.dt = [];
-            if (avg > 34) {
+            if (avg > 28) {
                 GFX.hi = false; GFX.auto = true;
                 gfxApplyResolution();
                 gfxToast('Phone is slow - switched to NORMAL graphics (tap ✨ to change)');
@@ -7003,6 +7108,8 @@
         const hdr = document.getElementById('gameHeader');
         if (hdr) hdr.classList.remove('menu-open');
         if (mobileMode) buildTouchControls();
+        fitMobileArena();
+        gfxApplyResolution();
     }
     let resizeTimer = null;
     const onViewportChange = () => {

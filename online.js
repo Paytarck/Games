@@ -134,6 +134,15 @@
     }
     function setRules(o)         { if (roomRef && role === 'host') roomRef.child('rules').set(o); }   // host -> guests (lobby game rules)
     function lockRoom()          { if (roomRef && role === 'host') roomRef.child('status').set('playing'); }
+    // host sends everybody back to the waiting room (to change map / rules / let new friends join)
+    function unlockRoom() {
+        if (!roomRef || role !== 'host') return;
+        roomRef.child('world').remove();       // so friends joining now don't load the old round
+        roomRef.child('state').remove();
+        roomRef.child('input').remove();
+        roomRef.child('status').set('lobby');
+    }
+    function onStatus(cb)        { listen(roomRef.child('status'), 'value', s => cb(s.val())); }
 
     function leave() {
         unlistenAll();
@@ -155,8 +164,8 @@
 
     window.TankNet = {
         available, configured, init, createRoom, joinRoom,
-        onPlayers, onRules, onRoomGone, onWorld, onState, onInput,
-        sendInput, setWorld, sendState, setRules, lockRoom, setColor, leave,
+        onPlayers, onRules, onRoomGone, onWorld, onState, onInput, onStatus,
+        sendInput, setWorld, sendState, setRules, lockRoom, unlockRoom, setColor, leave,
         uid: () => uid, code: () => code
     };
 })();
