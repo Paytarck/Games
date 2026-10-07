@@ -1755,6 +1755,21 @@
     window.addEventListener('pagehide', releaseAllKeys);
     document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAllKeys(); });
     window.addEventListener('contextmenu', releaseAllKeys);
+
+    // Guest: if the page is hidden or loses focus, frames stop and the host would keep the last "move". Stop immediately.
+    function guestStopNow() {
+        try {
+            if (!isOnlineGuest()) return;
+            touchStick[0] = null;
+            ONLINE.lastMove = { x: 0, y: 0 };
+            ONLINE.inSeq = (ONLINE.inSeq || 0) + 1;
+            TankNet.sendInput({ x: 0, y: 0, a: Math.round((ONLINE.localAim || 0) * 1000) / 1000, f: ONLINE.fireSeq, q: ONLINE.inSeq });
+        } catch (e) {}
+    }
+    window.addEventListener('blur', guestStopNow);
+    window.addEventListener('pagehide', guestStopNow);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) guestStopNow(); });
+
     window.addEventListener('keydown', (e) => {
         // Windows / Cmd / Alt shortcuts swallow the key-ups of everything that is held
         if (e.code === 'MetaLeft' || e.code === 'MetaRight' || e.code === 'AltLeft' || e.code === 'AltRight' || e.key === 'Meta' || e.key === 'ContextMenu') releaseAllKeys();
@@ -3088,7 +3103,7 @@
             if (isRemoteSlot(i)) {
                 const inp = ONLINE.inputs[i];
                 if (inp) {
-                    const stale = performance.now() - ((ONLINE.inputT && ONLINE.inputT[i]) || 0) > 2500;   // friend sends at least once a second
+                    const stale = performance.now() - ((ONLINE.inputT && ONLINE.inputT[i]) || 0) > 900;   // friend sends a heartbeat every 250 ms
                     moveX = stale ? 0 : (+inp.x || 0);
                     moveY = stale ? 0 : (+inp.y || 0);
                     if (typeof inp.a === 'number' && isFinite(inp.a)) p.turretAngle = inp.a;
@@ -6250,7 +6265,7 @@
         const key = inp.x + ',' + inp.y + ',' + inp.a + ',' + inp.f;
         const now = performance.now();
         const since = now - ONLINE.lastInputT;
-        if (force || (key !== ONLINE.lastInputKey && since >= 20) || since > 1000) {
+        if (force || (key !== ONLINE.lastInputKey && since >= 20) || since > 250) {
             ONLINE.lastInputKey = key;
             ONLINE.lastInputT = now;
             (ONLINE.sendT || (ONLINE.sendT = {}))[inp.q] = now;
@@ -6541,6 +6556,7 @@
         if (role === 'host') {
             TankNet.onInput((uid, val) => {
                 const slot = ONLINE.slotUids.indexOf(uid);
+                if (slot > 0 && !val) { delete ONLINE.inputs[slot]; if (ONLINE.inputT) delete ONLINE.inputT[slot]; }
                 if (slot > 0 && val) { ONLINE.inputs[slot] = val; (ONLINE.inputT || (ONLINE.inputT = {}))[slot] = performance.now(); }
             });
         } else {

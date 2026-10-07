@@ -101,6 +101,8 @@
 
         code = c; role = 'guest'; roomRef = ref;
         ref.child('players/' + uid).onDisconnect().remove();
+        // if the guest drops (phone locked, signal lost) the host must stop driving their tank
+        ref.child('input/' + uid).onDisconnect().remove();
         return true;
     }
 
@@ -115,6 +117,7 @@
         const h = s => cb(s.key, s.val());
         listen(r, 'child_added', h);
         listen(r, 'child_changed', h);
+        listen(r, 'child_removed', s => cb(s.key, null));   // guest left / dropped -> host clears that input
     }
 
     // ---- senders ----
@@ -154,6 +157,7 @@
                 } else {
                     const me = roomRef.child('players/' + uid);
                     me.onDisconnect().cancel();
+                    roomRef.child('input/' + uid).onDisconnect().cancel();
                     me.remove();
                     roomRef.child('input/' + uid).remove();
                 }
